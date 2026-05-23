@@ -18,7 +18,9 @@ export const watchCommand = cli({
         while (true) {
             const text = await page.evaluate(`
         async () => {
-          const container = document.getElementById('conversation');
+          const container = document.getElementById('conversation')
+            || document.querySelector('[data-testid="conversation"]')
+            || document.querySelector('[data-testid="conversation-view"]');
           return container ? container.innerText : '';
         }
       `);

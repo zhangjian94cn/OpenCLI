@@ -1829,7 +1829,7 @@
         "name": "last",
         "type": "str",
         "required": false,
-        "help": "Number of recent messages to read (not fully implemented due to generic structure, currently returns full history text or latest chunk)"
+        "help": "Number of recent messages to read from the current Antigravity conversation"
       }
     ],
     "columns": [

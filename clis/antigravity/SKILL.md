@@ -1,4 +1,5 @@
 ---
+name: antigravity
 description: How to automate Antigravity using OpenCLI
 ---
 

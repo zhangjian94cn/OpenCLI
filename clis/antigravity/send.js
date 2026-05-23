@@ -1,4 +1,6 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
+import { sendAntigravityMessage } from './utils.js';
+
 export const sendCommand = cli({
     site: 'antigravity',
     name: 'send',
@@ -13,24 +15,7 @@ export const sendCommand = cli({
     columns: ['Status', 'Message'],
     func: async (page, kwargs) => {
         const text = kwargs.message;
-        // We use evaluate to focus and insert text because Lexical editors maintain
-        // absolute control over their DOM and don't respond to raw node.textContent.
-        // document.execCommand simulates a native paste/typing action perfectly.
-        await page.evaluate(`
-      async () => {
-        const container = document.getElementById('antigravity.agentSidePanelInputBox');
-        if (!container) throw new Error('Could not find antigravity.agentSidePanelInputBox');
-        const editor = container.querySelector('[data-lexical-editor="true"]');
-        if (!editor) throw new Error('Could not find Antigravity input box');
-        
-        editor.focus();
-        document.execCommand('insertText', false, ${JSON.stringify(text)});
-      }
-    `);
-        // Wait for the React/Lexical state to flush the new input
-        await page.wait(0.5);
-        // Press Enter to submit the message
-        await page.pressKey('Enter');
+        await sendAntigravityMessage(page, text);
         return [{ Status: 'Sent successfully', Message: text }];
     },
 });
