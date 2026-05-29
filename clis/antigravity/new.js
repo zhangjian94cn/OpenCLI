@@ -4,20 +4,18 @@ import { startNewAntigravityConversation } from './utils.js';
 export const newCommand = cli({
     site: 'antigravity',
     name: 'new',
-    access: 'read',
-    description: 'Start a new conversation / clear context in Antigravity',
+    access: 'write',
+    description: 'Start a new conversation / clear context in Antigravity and verify the resulting state',
     domain: 'localhost',
     strategy: Strategy.UI,
     browser: true,
     args: [],
-    columns: ['status'],
+    columns: ['ok', 'changed', 'reason'],
     func: async (page) => {
         const result = await startNewAntigravityConversation(page);
         if (!result?.ok) {
             throw new Error(result?.reason || 'Could not find New Conversation button');
         }
-        // Give it a moment to reset the UI
-        await page.wait(0.5);
-        return [{ status: 'Successfully started a new conversation' }];
+        return result;
     },
 });

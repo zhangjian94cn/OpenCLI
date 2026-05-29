@@ -15,6 +15,18 @@ describe('electron-apps registry', () => {
     expect(app!.port).toBe(9238);
   });
 
+  it('returns builtin app entry for Claude desktop app', () => {
+    const app = getElectronApp('claude-app');
+    expect(app).toBeDefined();
+    expect(app!.processName).toBe('Claude');
+    expect(app!.bundleId).toBe('com.anthropic.claudefordesktop');
+    expect(app!.port).toBe(9242);
+    expect(app!.appPath).toBe('/Applications/Claude.app');
+    expect(app!.autoRestart).toBe(false);
+    expect(app!.preferredTargetUrlPatterns).toContain('^https://claude\\.ai/');
+    expect(app!.ignoredTargetUrlPatterns).toContain('^file://');
+  });
+
   it('keeps builtin Electron app CDP ports unique and off the browser-bridge port', () => {
     const ports = Object.values(builtinApps).map((app) => app.port);
 
@@ -39,6 +51,7 @@ describe('electron-apps registry', () => {
   it('isElectronApp returns true for registered apps', () => {
     expect(isElectronApp('cursor')).toBe(true);
     expect(isElectronApp('codex')).toBe(true);
+    expect(isElectronApp('claude-app')).toBe(true);
     expect(isElectronApp('chatwise')).toBe(true);
     expect(isElectronApp('qoder')).toBe(true);
     expect(isElectronApp('trae-solo')).toBe(true);

@@ -254,6 +254,72 @@ export function selectCodexConversationInDocument(target, doc = document) {
     };
 }
 
+export function selectCodexProjectInDocument(projectQuery, doc = document) {
+    const projectRowSelector = '[data-app-action-sidebar-project-row]';
+
+    function clean(value) {
+        return String(value ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function normalize(value) {
+        return clean(value).toLowerCase();
+    }
+
+    function matches(value, query) {
+        const haystack = normalize(value);
+        const needle = normalize(query);
+        return !!needle && (haystack === needle || haystack.includes(needle) || haystack.endsWith(`/${needle}`));
+    }
+
+    function projectLabel(row) {
+        return row.getAttribute('data-app-action-sidebar-project-label')
+            || row.getAttribute('aria-label')
+            || row.textContent
+            || '';
+    }
+
+    function projectPath(row) {
+        return row.getAttribute('data-app-action-sidebar-project-id') || '';
+    }
+
+    function centerPoint(row) {
+        const rect = row.getBoundingClientRect?.();
+        if (!rect || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
+            return {};
+        }
+        return {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+        };
+    }
+
+    const requested = clean(projectQuery);
+    if (!requested) {
+        return { ok: false, error: 'Project target is required' };
+    }
+    const projectRows = Array.from(doc.querySelectorAll(projectRowSelector));
+    const projectRow = projectRows.find(row => matches(projectLabel(row), requested))
+        || projectRows.find(row => matches(projectPath(row), requested));
+    if (!projectRow) {
+        return {
+            ok: false,
+            error: `Project not found: ${requested}`,
+            projects: projectRows.map(row => projectLabel(row)).filter(Boolean),
+        };
+    }
+    projectRow.scrollIntoView?.({ block: 'center' });
+    projectRow.click?.();
+    return {
+        ok: true,
+        selected: true,
+        project: clean(projectLabel(projectRow)),
+        projectPath: projectPath(projectRow),
+        collapsed: projectRow.getAttribute('data-app-action-sidebar-project-collapsed') === 'true'
+            || projectRow.getAttribute('aria-expanded') === 'false',
+        ...centerPoint(projectRow),
+    };
+}
+
 export function flattenCodexProjects(projects, opts = {}) {
     const projectFilter = opts.project;
     const limit = parseOptionalPositiveIntegerOption(opts.limit, 'codex --limit');
@@ -345,6 +411,21 @@ export async function openCodexConversation(page, kwargs) {
         await page.nativeClick(result.x, result.y);
     }
     await page.wait(1);
+    return result;
+}
+
+export async function openCodexProject(page, project) {
+    const target = requireNonEmptyOption(project, 'codex project');
+    const preferNativeClick = typeof page.nativeClick === 'function';
+    let result = await page.evaluate(`(${selectCodexProjectInDocument.toString()})(${JSON.stringify(target)})`);
+    if (!result?.ok) {
+        const detail = result?.projects ? ` Available projects: ${result.projects.join(', ')}` : '';
+        throw new EmptyResultError('codex project', `${result?.error || 'Could not select Codex project'}${detail}`);
+    }
+    if (preferNativeClick && Number.isFinite(result.x) && Number.isFinite(result.y)) {
+        await page.nativeClick(result.x, result.y);
+    }
+    await page.wait(0.5);
     return result;
 }
 

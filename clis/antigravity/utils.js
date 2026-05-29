@@ -115,6 +115,17 @@ export function resolveAntigravityModelTarget(requestedModel) {
   return { requested, target: requested.toLowerCase(), matched: false };
 }
 
+export function normalizeAntigravityModelSearch(value) {
+  return String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\r/g, '')
+    .toLowerCase()
+    .replace(/\b(thinking|high|medium|low|fast)\b/g, ' ')
+    .replace(/[^a-z0-9.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function createAntigravitySessionState() {
   return {
     active: false,
@@ -326,6 +337,7 @@ export function extractConversationSnapshotFromDocument(doc, options = {}) {
     }
     return { index, role, content };
   }).filter((message) => message.content.length > 0);
+  const totalMessageCount = messages.length;
 
   const last = Number(options?.last || 0);
   if (Number.isFinite(last) && last > 0) {
@@ -345,7 +357,7 @@ export function extractConversationSnapshotFromDocument(doc, options = {}) {
     hasEditor: !!editor,
     hasSendButton: !!sendButton,
     isGenerating: !!stopButton,
-    messageCount: messages.length,
+    messageCount: totalMessageCount,
     messages,
   };
 }
@@ -902,12 +914,55 @@ export async function clickAntigravitySendButton(page) {
 }
 
 export async function startNewAntigravityConversation(page) {
-  return page.evaluate(serializePageFunction(startNewConversationInDocument));
+  const stateBefore = await getAntigravityPageState(page).catch(() => null);
+  const clicked = await page.evaluate(serializePageFunction(startNewConversationInDocument));
+  if (!clicked?.ok) {
+    return {
+      ok: false,
+      changed: false,
+      reason: clicked?.reason || 'Could not find New Conversation button',
+      state_before: stateBefore,
+    };
+  }
+  if (typeof page.wait === 'function') await page.wait(0.75);
+  const stateAfter = await getAntigravityPageState(page).catch(() => null);
+  const beforeId = stateBefore?.conversation_id || '';
+  const afterId = stateAfter?.conversation_id || '';
+  const changed = !!afterId && afterId !== beforeId;
+  const blankReady = !!stateAfter?.has_editor
+    && !stateAfter?.composer?.hasText
+    && Number(stateAfter?.message_count || 0) <= 1;
+  return {
+    ok: changed || blankReady || clicked.ok === true,
+    changed,
+    method: 'ui-click',
+    state_before: stateBefore,
+    state_after: stateAfter,
+    ...(changed || blankReady ? {} : { reason: 'Clicked New Conversation, but state change was not verified.' }),
+  };
 }
 
 export async function setAntigravityModel(page, targetName) {
-  const opened = await page.evaluate(serializePageFunction(openModelMenuInDocument, targetName));
-  if (!opened?.ok || opened.changed === false) return opened;
+  const requested = String(targetName || '').trim();
+  if (!requested) return { ok: false, changed: false, reason: 'model target is required' };
+  const target = resolveAntigravityModelTarget(requested).target || requested;
+  const before = await getAntigravityPageState(page).catch(() => null);
+  if (before?.is_generating) {
+    return {
+      ok: false,
+      changed: false,
+      currentModel: before.model || '',
+      availableModels: [],
+      state: before,
+      reason: 'Antigravity is currently generating. Use wait or stop before switching models.',
+    };
+  }
+  if (before?.model && normalizeAntigravityModelSearch(before.model).includes(normalizeAntigravityModelSearch(target))) {
+    return { ok: true, changed: false, currentModel: before.model, state: before };
+  }
+
+  const opened = await page.evaluate(serializePageFunction(openModelMenuInDocument, target));
+  if (!opened?.ok || opened.changed === false) return { ...opened, state: before };
 
   let lastResult = null;
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -916,23 +971,44 @@ export async function setAntigravityModel(page, targetName) {
     } else {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    lastResult = await page.evaluate(serializePageFunction(selectModelOptionInDocument, targetName));
+    lastResult = await page.evaluate(serializePageFunction(selectModelOptionInDocument, target));
     if (lastResult?.ok) {
-      return {
-        currentModel: opened.currentModel,
-        ...lastResult,
-      };
+      break;
     }
     if (lastResult?.availableModels?.length > 0) break;
   }
 
+  if (typeof page.wait === 'function') await page.wait(0.75);
+  const after = await getAntigravityPageState(page).catch(() => null);
+  const verified = !!after?.model
+    && normalizeAntigravityModelSearch(after.model).includes(normalizeAntigravityModelSearch(target));
+
+  if (lastResult?.ok && verified) {
+    return {
+      ok: true,
+      changed: normalizeAntigravityModelSearch(before?.model || '') !== normalizeAntigravityModelSearch(after.model),
+      currentModel: before?.model || opened.currentModel || '',
+      selectedModel: lastResult.selectedModel,
+      model: after.model,
+      availableModels: lastResult.availableModels || [],
+      state_before: before,
+      state_after: after,
+    };
+  }
+
   return {
-    currentModel: opened.currentModel,
+    ok: false,
+    changed: false,
+    currentModel: before?.model || opened.currentModel || '',
+    state_before: before,
+    state_after: after,
     ...(lastResult || {
-      ok: false,
       reason: `Model matching "${targetName}" was not found in the dropdown list.`,
       availableModels: [],
     }),
+    reason: lastResult?.reason
+      || (lastResult?.ok ? `Model switch was not verified. Current model: ${after?.model || before?.model || 'unknown'}` : undefined)
+      || `Model matching "${targetName}" was not found in the dropdown list.`,
   };
 }
 
@@ -940,7 +1016,7 @@ export function extractLastAssistantReply(snapshot, userText = '') {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
   const assistant = [...messages].reverse().find((message) => message.role === 'assistant') || messages[messages.length - 1];
   let reply = String(assistant?.content || '').trim();
-  if (userText && reply.startsWith(userText)) {
+  if (userText && (reply === userText || reply.startsWith(`${userText}\n`) || reply.startsWith(`${userText}\r\n`))) {
     reply = reply.slice(userText.length).trim();
   }
   reply = reply.replace(/^Thought for[^\n]*\n+/i, '').trim();
@@ -952,6 +1028,392 @@ export function extractLastAssistantReply(snapshot, userText = '') {
     reply = firstHalf;
   }
   return reply;
+}
+
+export function extractConversationIdFromUrl(url) {
+  const match = String(url || '').match(/\/c\/([a-fA-F0-9-]+)/);
+  return match ? match[1] : '';
+}
+
+function normalizeSnapshotText(raw) {
+  if (typeof raw !== 'string') return JSON.stringify(raw ?? '', null, 2);
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Keep the original text below.
+    }
+  }
+  return raw;
+}
+
+function cleanSnapshotLabel(value, limit = 240) {
+  const cleaned = String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length <= limit ? cleaned : `${cleaned.slice(0, limit - 3).trim()}...`;
+}
+
+function cleanModelLabel(value) {
+  const text = String(value || '')
+    .replace(/\r/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\bFast$/i, '')
+    .trim();
+  if (!text || /^(model|fast)$/i.test(text)) return '';
+  const modelKeywordCount = (text.match(/\b(Gemini|Claude|GPT|OSS)\b/gi) || []).length;
+  if (modelKeywordCount > 2) return '';
+  return text;
+}
+
+function snapshotProjectNameAt(lines, index) {
+  const match = String(lines[index] || '').match(/^\s*(?:\[\d+\])?<div>([^<]+)<\/div>\s*$/);
+  if (!match) return '';
+  const lookback = lines.slice(Math.max(0, index - 8), index).join('\n');
+  if (!lookback.includes('role=button') || !lookback.includes('aria-expanded=')) return '';
+  return cleanSnapshotLabel(match[1], 120);
+}
+
+function nextSnapshotSpanText(lines, index, maxLines = 8) {
+  for (const line of lines.slice(index + 1, index + 1 + maxLines)) {
+    const match = String(line || '').match(/<span>([^<]+)<\/span>/);
+    if (match) return cleanSnapshotLabel(match[1], 40);
+  }
+  return '';
+}
+
+export function extractAntigravityConversationsFromSnapshotText(rawSnapshot) {
+  const text = normalizeSnapshotText(rawSnapshot);
+  const lines = text.split(/\r?\n/);
+  const current = {};
+  for (const line of lines.slice(0, 20)) {
+    if (line.startsWith('url: ')) {
+      current.url = line.slice('url: '.length).trim();
+      const conversationId = extractConversationIdFromUrl(current.url);
+      if (conversationId) current.conversation_id = conversationId;
+    } else if (line.startsWith('title: ')) {
+      current.title = cleanSnapshotLabel(line.slice('title: '.length));
+    }
+  }
+  const modelMatch = text.match(/aria-label=Select model, current: ([^>/]+?)\s*\/?>/);
+  if (modelMatch) current.model = cleanSnapshotLabel(modelMatch[1], 120);
+
+  const projects = [];
+  let currentProject = null;
+  const ensureProject = (name) => {
+    currentProject = { name, conversations: [] };
+    projects.push(currentProject);
+    return currentProject;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const projectName = snapshotProjectNameAt(lines, index);
+    if (projectName) {
+      ensureProject(projectName);
+      continue;
+    }
+
+    const seeAll = String(lines[index] || '').match(/<button[^>]*>See all \((\d+)\)<\/button>/);
+    if (seeAll && currentProject) {
+      currentProject.see_all_count = Number.parseInt(seeAll[1], 10);
+      continue;
+    }
+
+    const conversation = String(lines[index] || '').match(/data-testid=convo-pill-([a-fA-F0-9-]+)>(.*?)<\/span>/);
+    if (!conversation) continue;
+    const project = currentProject || ensureProject('Unknown');
+    const item = {
+      id: conversation[1],
+      title: cleanSnapshotLabel(conversation[2]),
+      time: nextSnapshotSpanText(lines, index),
+    };
+    if (current.conversation_id && item.id === current.conversation_id) item.current = true;
+    project.conversations.push(item);
+  }
+
+  const visibleProjects = projects.filter((project) => project.conversations.length > 0 || project.see_all_count !== undefined);
+  return {
+    ok: true,
+    current,
+    visible_conversation_count: visibleProjects.reduce((sum, project) => sum + project.conversations.length, 0),
+    project_count: visibleProjects.length,
+    projects: visibleProjects,
+    note: 'Only conversations visible in the Antigravity sidebar snapshot are listed.',
+  };
+}
+
+export function modelOptionsInDocument(doc) {
+  const normalizeText = (value) => String(value || '').replace(/\r/g, '').trim();
+  const cleanModelLabelInDocument = (value) => {
+    const text = normalizeText(value).replace(/\s+/g, ' ').replace(/\bFast$/i, '').trim();
+    if (!text || /^(model|fast)$/i.test(text)) return '';
+    const modelKeywordCount = (text.match(/\b(Gemini|Claude|GPT|OSS)\b/gi) || []).length;
+    if (modelKeywordCount > 2) return '';
+    return text;
+  };
+  const modelTriggerSelectors = [
+    'button[aria-label^="Select model" i]',
+    'button[aria-label*="select model" i]',
+    'button[aria-label*="current:" i]',
+    '[data-testid="model-selector"]',
+    '[aria-label*="model" i]',
+    'div[aria-haspopup="dialog"] > div[tabindex="0"]',
+    '[aria-haspopup="dialog"] > div[tabindex="0"]',
+    'button[aria-haspopup="dialog"]',
+  ];
+  const queryFirst = (root, selectors) => {
+    for (const selector of selectors) {
+      const node = root.querySelector(selector);
+      if (node) return node;
+    }
+    return null;
+  };
+  const trigger = queryFirst(doc, modelTriggerSelectors);
+  const dialogRoot = doc.querySelector('[role="dialog"]') || doc.querySelector('[role="listbox"]');
+  const candidates = dialogRoot
+    ? Array.from(dialogRoot.querySelectorAll('button, [role="option"], li, .cursor-pointer, span'))
+      .map((node) => cleanModelLabelInDocument(node.textContent || ''))
+      .filter(Boolean)
+    : [];
+  return {
+    ok: true,
+    currentModel: cleanModelLabelInDocument(trigger?.textContent || ''),
+    availableModels: [...new Set(candidates)],
+  };
+}
+
+export function openConversationInDocument(doc, target) {
+  const normalizeText = (value) => String(value || '').replace(/\r/g, '').replace(/\s+/g, ' ').trim();
+  const requested = normalizeText(target).toLowerCase();
+  if (!requested) return { ok: false, reason: 'conversation target is required' };
+
+  const items = Array.from(doc.querySelectorAll('*'))
+    .map((node) => {
+      const testId = String(node.getAttribute?.('data-testid') || '');
+      const match = testId.match(/^convo-pill-([a-fA-F0-9-]+)$/);
+      if (!match) return null;
+      return {
+        node,
+        id: match[1],
+        title: normalizeText(node.textContent || ''),
+      };
+    })
+    .filter(Boolean);
+
+  const exact = items.find((item) => item.id.toLowerCase() === requested || item.title.toLowerCase() === requested);
+  const partial = exact || items.find((item) => item.title.toLowerCase().includes(requested));
+  if (!partial) {
+    return {
+      ok: false,
+      reason: `Conversation matching "${target}" was not found in the visible sidebar.`,
+      visibleConversations: items.map(({ id, title }) => ({ id, title })),
+    };
+  }
+
+  const clickable = partial.node.closest?.('[role="button"], button, div') || partial.node;
+  clickable.click?.();
+  return { ok: true, id: partial.id, title: partial.title };
+}
+
+export function clickStopButtonInDocument(doc) {
+  const selectors = [
+    'button[aria-label*="cancel" i]',
+    'button[aria-label*="stop" i]',
+    'button[title*="cancel" i]',
+    'button[title*="stop" i]',
+  ];
+  for (const selector of selectors) {
+    const button = doc.querySelector(selector);
+    if (!button) continue;
+    if (button.disabled || String(button.getAttribute?.('aria-disabled') || '').toLowerCase() === 'true') continue;
+    button.click?.();
+    return { ok: true };
+  }
+  return { ok: false, reason: 'Could not find a visible stop/cancel generation button' };
+}
+
+export async function getAntigravityPageState(page, options = {}) {
+  const last = Number.isFinite(Number(options.last)) ? Number(options.last) : 5;
+  const [url, title, snapshot, composer] = await Promise.all([
+    page.evaluate('window.location.href'),
+    page.evaluate('document.title'),
+    getAntigravityConversationSnapshot(page, { last }),
+    getAntigravityComposerState(page),
+  ]);
+  return {
+    ok: true,
+    url,
+    title,
+    conversation_id: extractConversationIdFromUrl(url),
+    model: snapshot.currentModel || '',
+    is_generating: !!snapshot.isGenerating,
+    composer,
+    has_editor: !!snapshot.hasEditor,
+    has_send_button: !!snapshot.hasSendButton,
+    message_count: snapshot.messageCount,
+    messages: snapshot.messages,
+  };
+}
+
+export async function listAntigravityConversations(page) {
+  if (typeof page.snapshot !== 'function') {
+    throw new Error('Current OpenCLI page driver does not support snapshots');
+  }
+  const snapshot = await page.snapshot({ raw: true });
+  return extractAntigravityConversationsFromSnapshotText(snapshot);
+}
+
+export async function listAntigravityModels(page) {
+  const opened = await page.evaluate(serializePageFunction(openModelMenuInDocument, ''));
+  if (typeof page.wait === 'function') await page.wait(0.2);
+  const listed = await page.evaluate(serializePageFunction(modelOptionsInDocument));
+  const availableModels = [...new Set([
+    ...(Array.isArray(opened?.availableModels) ? opened.availableModels : []),
+    ...(Array.isArray(listed?.availableModels) ? listed.availableModels : []),
+  ].map(cleanModelLabel).filter(Boolean))];
+  return {
+    ok: opened?.ok !== false || availableModels.length > 0,
+    currentModel: cleanModelLabel(listed?.currentModel || opened?.currentModel || ''),
+    availableModels,
+    ...(opened?.ok === false && availableModels.length === 0 ? { reason: opened.reason } : {}),
+  };
+}
+
+export async function openAntigravityConversation(page, target) {
+  const opened = await page.evaluate(serializePageFunction(openConversationInDocument, target));
+  if (!opened?.ok) return opened;
+  if (typeof page.wait === 'function') await page.wait(0.5);
+  return {
+    ...opened,
+    state: await getAntigravityPageState(page),
+  };
+}
+
+export async function waitForAntigravityIdle(page, opts = {}) {
+  const timeoutMs = Math.max(1, Number(opts.timeoutSeconds || opts.timeout || 120)) * 1000;
+  const readLast = Math.max(1, Number(opts.readLast || opts.last || 5));
+  const before = await getAntigravityConversationSnapshot(page, { last: readLast });
+  const snapshot = before.isGenerating
+    ? await waitForAntigravityReply(page, before, { timeoutMs })
+    : before;
+  return {
+    ok: true,
+    is_generating: !!snapshot.isGenerating,
+    message_count: snapshot.messageCount,
+    messages: snapshot.messages.slice(-readLast),
+    reply: extractLastAssistantReply(snapshot),
+  };
+}
+
+export async function stopAntigravityGeneration(page) {
+  const stateBefore = await getAntigravityPageState(page);
+  if (!stateBefore.is_generating) {
+    return {
+      ok: true,
+      stopped: false,
+      reason: 'not_generating',
+      state_before: stateBefore,
+      state_after: stateBefore,
+    };
+  }
+  const stopped = await page.evaluate(serializePageFunction(clickStopButtonInDocument));
+  if (typeof page.wait === 'function') await page.wait(0.5);
+  const stateAfter = await getAntigravityPageState(page);
+  return {
+    ok: !!stopped?.ok,
+    stopped: !!stopped?.ok,
+    error: stopped?.ok ? undefined : stopped?.reason,
+    state_before: stateBefore,
+    state_after: stateAfter,
+  };
+}
+
+export async function askAntigravity(page, opts = {}) {
+  const message = String(opts.message || '').trim();
+  if (!message) {
+    return { ok: false, action: 'ask', error: 'message is required' };
+  }
+
+  const readLast = Math.max(1, Number(opts.readLast || opts['read-last'] || 5));
+  const timeoutMs = Math.max(1, Number(opts.timeout || 120)) * 1000;
+  const shouldWait = opts.wait === true || opts.wait === 'true' || opts.wait === 1 || opts.wait === '1';
+  const shouldStartNew = opts.newConversation === true
+    || opts['new-conversation'] === true
+    || opts.new_conversation === true
+    || opts.newConversation === 'true'
+    || opts['new-conversation'] === 'true'
+    || opts.new_conversation === 'true';
+  const steps = [];
+  const stateBefore = await getAntigravityPageState(page, { last: readLast });
+
+  const runStep = async (name, fn) => {
+    try {
+      const result = await fn();
+      const ok = result?.ok !== false;
+      steps.push({ name, ok, ...(ok ? {} : { error: result?.reason || result?.error || 'step failed' }) });
+      return result;
+    } catch (error) {
+      steps.push({ name, ok: false, error: error?.message || String(error) });
+      throw error;
+    }
+  };
+
+  try {
+    if (shouldStartNew) {
+      const result = await runStep('new', () => startNewAntigravityConversation(page));
+      if (!result?.ok) throw new Error(result?.reason || 'Could not start a new Antigravity conversation');
+      if (typeof page.wait === 'function') await page.wait(0.5);
+    }
+
+    if (String(opts.model || '').trim()) {
+      const result = await runStep('model', () => setAntigravityModel(page, String(opts.model).trim()));
+      if (!result?.ok) throw new Error(result?.reason || 'Could not switch Antigravity model');
+      if (typeof page.wait === 'function') await page.wait(0.5);
+    }
+
+    const beforeSend = await getAntigravityConversationSnapshot(page, { last: readLast });
+    const sendMethod = await runStep('send', async () => ({
+      ok: true,
+      method: await sendAntigravityMessage(page, message),
+    }));
+
+    let afterSnapshot = null;
+    let messages = undefined;
+    let reply = undefined;
+    if (shouldWait) {
+      afterSnapshot = await runStep('wait', () => waitForAntigravityReply(page, beforeSend, { timeoutMs }));
+      messages = Array.isArray(afterSnapshot?.messages) ? afterSnapshot.messages.slice(-readLast) : [];
+      reply = extractLastAssistantReply(afterSnapshot, message);
+    }
+
+    const stateAfter = await getAntigravityPageState(page, { last: readLast });
+    return {
+      ok: steps.every((step) => step.ok),
+      action: 'ask',
+      steps,
+      state_before: stateBefore,
+      state_after: stateAfter,
+      send_method: sendMethod?.method,
+      ...(messages ? { messages } : {}),
+      ...(reply !== undefined ? { reply } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: 'ask',
+      error: error?.message || String(error),
+      steps,
+      state_before: stateBefore,
+      state_after: await getAntigravityPageState(page, { last: readLast }).catch(() => null),
+    };
+  }
 }
 
 export async function sendAntigravityMessage(page, text, { bridge } = {}) {
@@ -1038,8 +1500,32 @@ export async function sendAntigravityMessage(page, text, { bridge } = {}) {
     throw new Error(`Failed to insert text into Antigravity composer. Current text: ${currentText}`);
   }
 
+  const beforeSubmit = await getAntigravityPageState(page, { last: 1 }).catch(() => null);
+  const verifyAccepted = async (method) => {
+    let lastObserved = null;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await wait(0.25);
+      const state = await getAntigravityPageState(page, { last: 3 }).catch(() => null);
+      lastObserved = state;
+      const messages = Array.isArray(state?.messages) ? state.messages : [];
+      const userMessageAccepted = messages.some((message) =>
+        message?.role === 'user' && String(message?.content || '').trim() === expectedText
+      );
+      if (
+        state?.is_generating
+        || Number(state?.message_count || 0) > Number(beforeSubmit?.message_count || 0)
+        || userMessageAccepted
+        || (state?.composer && state.composer.hasText === false)
+      ) {
+        return method;
+      }
+    }
+    const composerText = String(lastObserved?.composer?.text || lastState?.text || '').slice(0, 200);
+    throw new Error(`Antigravity send was not verified after ${method}. Composer text: ${composerText}`);
+  };
+
   const clicked = await clickAntigravitySendButton(page);
-  if (clicked) return 'button';
+  if (clicked) return verifyAccepted('button');
 
   if (bridge) {
     await bridge.send('Input.dispatchKeyEvent', {
@@ -1056,19 +1542,19 @@ export async function sendAntigravityMessage(page, text, { bridge } = {}) {
       windowsVirtualKeyCode: 13,
       nativeVirtualKeyCode: 13,
     });
-    return 'bridge-enter';
+    return verifyAccepted('bridge-enter');
   }
 
   if (page.nativeKeyPress) {
     try {
       await page.nativeKeyPress('Enter');
-      return 'native-enter';
+      return verifyAccepted('native-enter');
     } catch {
       // Fall through to generic key press.
     }
   }
   await page.pressKey('Enter');
-  return 'enter';
+  return verifyAccepted('enter');
 }
 
 export async function waitForAntigravityReply(page, beforeSnapshot, opts = {}) {

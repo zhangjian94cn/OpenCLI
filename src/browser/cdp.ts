@@ -17,7 +17,7 @@ import { buildEvaluateExpression } from './utils.js';
 import { generateStealthJs } from './stealth.js';
 import { waitForDomStableJs } from './dom-helpers.js';
 import { isRecord, saveBase64ToFile } from '../utils.js';
-import { getAllElectronApps } from '../electron-apps.js';
+import { getAllElectronApps, getElectronApp, type ElectronAppEntry } from '../electron-apps.js';
 import { BasePage } from './base-page.js';
 
 export interface CDPTarget {
@@ -488,9 +488,12 @@ function matchesCookieDomain(cookieDomain: string, targetDomain: string): boolea
 
 function selectCDPTarget(targets: CDPTarget[]): CDPTarget | undefined {
   const preferredPattern = compilePreferredPattern(process.env.OPENCLI_CDP_TARGET);
+  const appEntry = process.env.OPENCLI_CDP_TARGET
+    ? getElectronApp(process.env.OPENCLI_CDP_TARGET)
+    : undefined;
 
   const ranked = targets
-    .map((target, index) => ({ target, index, score: scoreCDPTarget(target, preferredPattern) }))
+    .map((target, index) => ({ target, index, score: scoreCDPTarget(target, preferredPattern, appEntry) }))
     .filter(({ score }) => Number.isFinite(score))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -500,7 +503,7 @@ function selectCDPTarget(targets: CDPTarget[]): CDPTarget | undefined {
   return ranked[0]?.target;
 }
 
-function scoreCDPTarget(target: CDPTarget, preferredPattern?: RegExp): number {
+function scoreCDPTarget(target: CDPTarget, preferredPattern?: RegExp, appEntry?: ElectronAppEntry): number {
   if (!target.webSocketDebuggerUrl) return Number.NEGATIVE_INFINITY;
 
   const type = (target.type ?? '').toLowerCase();
@@ -511,10 +514,12 @@ function scoreCDPTarget(target: CDPTarget, preferredPattern?: RegExp): number {
   if (!haystack.trim() && !type) return Number.NEGATIVE_INFINITY;
   if (haystack.includes('devtools')) return Number.NEGATIVE_INFINITY;
   if (type === 'background_page' || type === 'service_worker') return Number.NEGATIVE_INFINITY;
+  if (matchesAnyPattern(url, appEntry?.ignoredTargetUrlPatterns)) return Number.NEGATIVE_INFINITY;
 
   let score = 0;
 
   if (preferredPattern && preferredPattern.test(haystack)) score += 1000;
+  if (matchesAnyPattern(url, appEntry?.preferredTargetUrlPatterns)) score += 600;
 
   if (type === 'app') score += 120;
   else if (type === 'webview') score += 100;
@@ -545,6 +550,17 @@ function compilePreferredPattern(raw: string | undefined): RegExp | undefined {
   const value = raw?.trim();
   if (!value) return undefined;
   return new RegExp(escapeRegExp(value.toLowerCase()));
+}
+
+function matchesAnyPattern(value: string, patterns: string[] | undefined): boolean {
+  if (!patterns?.length) return false;
+  return patterns.some((pattern) => {
+    try {
+      return new RegExp(pattern, 'i').test(value);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function escapeRegExp(value: string): string {

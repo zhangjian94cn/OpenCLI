@@ -23,11 +23,29 @@ export interface ElectronAppEntry {
   displayName?: string;
   /** Additional launch args beyond --remote-debugging-port */
   extraArgs?: string[];
+  /** Fixed macOS app path when display-name lookup is unreliable. */
+  appPath?: string;
+  /** Whether OpenCLI may restart a running app to add CDP. Defaults to true. */
+  autoRestart?: boolean;
+  /** URL regexes for inspectable targets that should be preferred for this app. */
+  preferredTargetUrlPatterns?: string[];
+  /** URL regexes for inspectable targets that should not be selected for this app. */
+  ignoredTargetUrlPatterns?: string[];
 }
 
 export const builtinApps: Record<string, ElectronAppEntry> = {
   cursor:        { port: 9226, processName: 'Cursor',      bundleId: 'com.todesktop.runtime.Cursor',   displayName: 'Cursor' },
   codex:         { port: 9238, processName: 'Codex',        bundleId: 'com.openai.codex',               displayName: 'Codex' },
+  'claude-app':  {
+    port: 9242,
+    processName: 'Claude',
+    bundleId: 'com.anthropic.claudefordesktop',
+    displayName: 'Claude',
+    appPath: '/Applications/Claude.app',
+    autoRestart: false,
+    preferredTargetUrlPatterns: ['^https://claude\\.ai/'],
+    ignoredTargetUrlPatterns: ['^file://'],
+  },
   chatwise:      { port: 9228, processName: 'ChatWise',     bundleId: 'com.chatwise.app',               displayName: 'ChatWise' },
   'discord-app': { port: 9232, processName: 'Discord',      bundleId: 'com.discord.app',                 displayName: 'Discord' },
   'doubao-app':  { port: 9225, processName: 'Doubao',       bundleId: 'com.volcengine.doubao',          displayName: 'Doubao' },

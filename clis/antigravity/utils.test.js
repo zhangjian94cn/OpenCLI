@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest';
 import {
   AntigravitySessionConflictError,
   applyAntigravitySessionReply,
+  askAntigravity,
   createAntigravitySessionState,
+  extractAntigravityConversationsFromSnapshotText,
   extractConversationSnapshotFromDocument,
   extractLastAssistantReply,
   fingerprintConversationEntries,
+  getAntigravityPageState,
+  listAntigravityModels,
+  openConversationInDocument,
   resolveAntigravityModelTarget,
   sendAntigravityMessage,
   setModelInDocument,
+  stopAntigravityGeneration,
   validateAntigravitySessionRequest,
 } from './utils.js';
 
@@ -312,9 +318,32 @@ function createAntigravity206Fixture() {
 
   const dialog = body.appendChild(new FakeElement('div', { role: 'dialog' }));
   dialog.appendChild(new FakeElement('div', { class: 'cursor-pointer' })).appendChild(new FakeElement('span', {}, 'Claude Opus 4.6 (Thinking)'));
-  dialog.appendChild(new FakeElement('div', { class: 'cursor-pointer' })).appendChild(new FakeElement('span', {}, 'Gemini 3.5 Flash (High)'));
+  const geminiOption = dialog.appendChild(new FakeElement('div', { class: 'cursor-pointer' }));
+  geminiOption.appendChild(new FakeElement('span', {}, 'Gemini 3.5 Flash (High)'));
+  geminiOption.click = () => {
+    geminiOption.clicked = true;
+    modelButton.textContent = 'Gemini 3.5 Flash (High)';
+    modelButton.setAttribute('aria-label', 'Select model, current: Gemini 3.5 Flash (High)');
+  };
 
   return new FakeDocument(body);
+}
+
+function createPage(document, options = {}) {
+  return {
+    evaluate: async (js) => {
+      if (js === 'window.location.href') {
+        return options.url || 'https://127.0.0.1:60857/c/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+      }
+      if (js === 'document.title') {
+        return options.title || 'Active Session';
+      }
+      return Function('document', `return ${js}`)(document);
+    },
+    snapshot: async () => options.snapshot || '',
+    wait: async () => {},
+    nativeKeyPress: async () => {},
+  };
 }
 
 describe('antigravity DOM helpers', () => {
@@ -323,7 +352,7 @@ describe('antigravity DOM helpers', () => {
 
     const snapshot = extractConversationSnapshotFromDocument(document, { last: 2 });
 
-    expect(snapshot.messageCount).toBe(2);
+    expect(snapshot.messageCount).toBe(3);
     expect(snapshot.messages).toEqual([
       { index: 1, role: 'assistant', content: 'Thought for 2s\nAnswer text' },
       { index: 2, role: 'user', content: 'Follow up' },
@@ -368,6 +397,17 @@ describe('antigravity DOM helpers', () => {
     expect(reply).toBe('Done');
   });
 
+  it('does not strip natural assistant greetings that start with the user text', () => {
+    const reply = extractLastAssistantReply({
+      messages: [
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hello! I am ready to help.' },
+      ],
+    }, 'Hello');
+
+    expect(reply).toBe('Hello! I am ready to help.');
+  });
+
   it('selects models from the dropdown using shared selectors', async () => {
     const document = createConversationFixture();
 
@@ -383,11 +423,19 @@ describe('antigravity DOM helpers', () => {
     const document = createAntigravity206Fixture();
     const editor = document.querySelector('[contenteditable="true"]');
     const sendButton = document.querySelector('[data-testid="send-button"]');
+    const conversation = document.querySelector('[data-testid="conversation-view"]');
     editor.textContent = 'HelloHelloHello';
+    sendButton.disabled = true;
     let selectedAll = false;
 
     const page = {
       evaluate: async (js) => {
+        if (js === 'window.location.href') {
+          return 'https://127.0.0.1:60857/c/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+        }
+        if (js === 'document.title') {
+          return 'Active Session';
+        }
         const evaluateDocument = document;
         return Function('document', `return ${js}`)(evaluateDocument);
       },
@@ -400,6 +448,10 @@ describe('antigravity DOM helpers', () => {
         if (key === 'Backspace' && selectedAll) {
           editor.textContent = '';
           selectedAll = false;
+        }
+        if (key === 'Enter') {
+          conversation.appendChild(new FakeElement('div', { role: 'article', 'aria-label': 'User message' }, editor.textContent));
+          editor.textContent = '';
         }
       },
       nativeType: async (text) => {
@@ -414,9 +466,156 @@ describe('antigravity DOM helpers', () => {
 
     const result = await sendAntigravityMessage(page, 'Hello');
 
-    expect(result).toBe('button');
-    expect(editor.textContent).toBe('Hello');
-    expect(sendButton.clicked).toBe(true);
+    expect(result).toBe('native-enter');
+    expect(editor.textContent).toBe('');
+    expect(sendButton.clicked).toBe(false);
+  });
+
+  it('does not report sent when Antigravity does not accept the composer text', async () => {
+    const document = createAntigravity206Fixture();
+    const sendButton = document.querySelector('[data-testid="send-button"]');
+    sendButton.disabled = true;
+    const page = createPage(document);
+
+    await expect(sendAntigravityMessage(page, 'Hello')).rejects.toThrow(/send was not verified/);
+    expect(sendButton.clicked).toBe(false);
+  });
+
+  it('extracts visible sidebar conversations from an Antigravity snapshot', () => {
+    const snapshot = `
+url: https://127.0.0.1:60857/c/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa?section=1
+title: Active Session
+viewport: 1352x847
+---
+  [10]<div role=button tabindex=0 aria-expanded=true />
+    <div />
+      <div>zhangjian-skills</div>
+  [12]<span data-testid=convo-pill-aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa>Active Session</span>
+    <div />
+      <span>12m</span>
+  [14]<span data-testid=convo-pill-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb>Older &amp; Escaped</span>
+    <div />
+      <span>1d</span>
+  [15]<button>See all (32)</button>
+  [20]<div role=button tabindex=0 aria-expanded=true />
+    <div />
+      <div>lingxi-ai-framework</div>
+  [22]<span data-testid=convo-pill-cccccccc-cccc-4ccc-cccc-cccccccccccc>Reviewing PRs</span>
+    <div />
+      <span>2d</span>
+  [30]<button aria-label=Select model, current: Gemini 3.5 Flash Medium />
+`;
+
+    const result = extractAntigravityConversationsFromSnapshotText(JSON.stringify(snapshot));
+
+    expect(result.ok).toBe(true);
+    expect(result.current.conversation_id).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+    expect(result.current.model).toBe('Gemini 3.5 Flash Medium');
+    expect(result.visible_conversation_count).toBe(3);
+    expect(result.projects[0].name).toBe('zhangjian-skills');
+    expect(result.projects[0].see_all_count).toBe(32);
+    expect(result.projects[0].conversations[0].current).toBe(true);
+    expect(result.projects[0].conversations[1].title).toBe('Older & Escaped');
+  });
+
+  it('returns compact page state for one-shot control', async () => {
+    const document = createAntigravity206Fixture();
+    const page = createPage(document, {
+      url: 'https://127.0.0.1:60857/c/bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+      title: 'State Test',
+    });
+
+    const state = await getAntigravityPageState(page, { last: 1 });
+
+    expect(state.ok).toBe(true);
+    expect(state.title).toBe('State Test');
+    expect(state.conversation_id).toBe('bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb');
+    expect(state.model).toBe('Claude Opus 4.6 (Thinking)');
+    expect(state.has_editor).toBe(true);
+    expect(state.has_send_button).toBe(true);
+    expect(state.messages).toHaveLength(1);
+  });
+
+  it('lists visible models without changing the selected model', async () => {
+    const document = createAntigravity206Fixture();
+    const page = createPage(document);
+
+    const result = await listAntigravityModels(page);
+
+    expect(result.ok).toBe(true);
+    expect(result.currentModel).toBe('Claude Opus 4.6 (Thinking)');
+    expect(result.availableModels).toContain('Gemini 3.5 Flash (High)');
+  });
+
+  it('opens a visible conversation by id or title', () => {
+    const body = new FakeElement('body');
+    const row = body.appendChild(new FakeElement('div', { role: 'button' }));
+    const pill = row.appendChild(new FakeElement('span', {
+      'data-testid': 'convo-pill-aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+    }, 'Target Conversation'));
+    const document = new FakeDocument(body);
+
+    const result = openConversationInDocument(document, 'Target');
+
+    expect(result.ok).toBe(true);
+    expect(result.id).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+    expect(pill.clicked || row.clicked).toBe(true);
+  });
+
+  it('stops generation via the visible stop button and reports before/after state', async () => {
+    const document = createAntigravity206Fixture();
+    const stopButton = document.body.appendChild(new FakeElement('button', { 'aria-label': 'Stop generation' }, 'Stop'));
+    const generating = document.querySelector('[data-testid="conversation-view"]');
+    generating.appendChild(new FakeElement('div', { role: 'status' }, 'Generating response'));
+    const page = createPage(document);
+
+    const result = await stopAntigravityGeneration(page);
+
+    expect(result.ok).toBe(true);
+    expect(result.stopped).toBe(true);
+    expect(stopButton.clicked).toBe(true);
+    expect(result.state_before.ok).toBe(true);
+    expect(result.state_after.ok).toBe(true);
+  });
+
+  it('treats stop as a no-op when Antigravity is already idle', async () => {
+    const document = createAntigravity206Fixture();
+    const page = createPage(document);
+
+    const result = await stopAntigravityGeneration(page);
+
+    expect(result.ok).toBe(true);
+    expect(result.stopped).toBe(false);
+    expect(result.reason).toBe('not_generating');
+    expect(result.state_before.ok).toBe(true);
+    expect(result.state_after).toEqual(result.state_before);
+  });
+
+  it('runs ask as new -> model -> send -> wait and returns the reply', async () => {
+    const document = createAntigravity206Fixture();
+    const conversation = document.querySelector('[data-testid="conversation-view"]');
+    const sendButton = document.querySelector('[data-testid="send-button"]');
+    const editor = document.querySelector('[contenteditable="true"]');
+    sendButton.click = () => {
+      sendButton.clicked = true;
+      conversation.appendChild(new FakeElement('div', { role: 'article', 'aria-label': 'User message' }, editor.textContent));
+      conversation.appendChild(new FakeElement('div', { role: 'article', 'aria-label': 'Agent response' }, 'Done response'));
+    };
+    const page = createPage(document);
+
+    const result = await askAntigravity(page, {
+      message: 'Hello',
+      model: 'gemini 3.5 flash high',
+      'new-conversation': true,
+      wait: true,
+      timeout: 2,
+      'read-last': 4,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.steps.map((step) => step.name)).toEqual(['new', 'model', 'send', 'wait']);
+    expect(result.reply).toBe('Done response');
+    expect(result.messages.at(-1).content).toBe('Done response');
   });
 });
 

@@ -1,6 +1,6 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { selectorError } from '@jackwener/opencli/errors';
 import { conversationSelectionArgs, openCodexConversation } from './sidebar.js';
+import { sendCodexMessage } from './utils.js';
 export const sendCommand = cli({
     site: 'codex',
     name: 'send',
@@ -13,37 +13,17 @@ export const sendCommand = cli({
         { name: 'text', required: true, positional: true, help: 'Text, command (e.g. /review), or skill (e.g. $imagegen)' },
         ...conversationSelectionArgs,
     ],
-    columns: ['Status', 'Project', 'Conversation', 'InjectedText'],
+    columns: ['Status', 'Project', 'Conversation', 'Method', 'InjectedText'],
     func: async (page, kwargs) => {
         const textToInsert = kwargs.text;
         const selected = await openCodexConversation(page, kwargs);
-        const injected = await page.evaluate(`
-      (function(text) {
-        let composer = document.querySelector('textarea, [contenteditable="true"]');
-        
-        const editables = Array.from(document.querySelectorAll('[contenteditable="true"]'));
-        if (editables.length > 0) {
-           composer = editables[editables.length - 1];
-        }
-
-        if (!composer) return false;
-
-        composer.focus();
-        document.execCommand('insertText', false, text);
-        return true;
-      })(${JSON.stringify(textToInsert)})
-    `);
-        if (!injected)
-            throw selectorError('Codex Composer input element');
-        // Wait for the UI to register the input
-        await page.wait(0.5);
-        // Simulate Enter key to submit
-        await page.pressKey('Enter');
+        const method = await sendCodexMessage(page, textToInsert);
         return [
             {
                 Status: 'Success',
                 Project: selected?.project || '',
                 Conversation: selected?.conversation || '',
+                Method: method,
                 InjectedText: textToInsert,
             },
         ];

@@ -110,6 +110,27 @@ describe('browser helpers', () => {
 
     expect(target?.webSocketDebuggerUrl).toBe('ws://127.0.0.1:9226/codex');
   });
+
+  it('selects the Claude App web contents instead of the local Electron wrapper target', () => {
+    vi.stubEnv('OPENCLI_CDP_TARGET', 'claude-app');
+
+    const target = cdpTest.selectCDPTarget([
+      {
+        type: 'page',
+        title: 'index.html',
+        url: 'file:///Users/zjah/Applications/Claude-CDP.app/Contents/Resources/app.asar/.vite/renderer/main_window/index.html',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9242/local',
+      },
+      {
+        type: 'page',
+        title: '',
+        url: 'https://claude.ai/epitaxy',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9242/claude',
+      },
+    ]);
+
+    expect(target?.webSocketDebuggerUrl).toBe('ws://127.0.0.1:9242/claude');
+  });
 });
 
 describe('BrowserBridge state', () => {

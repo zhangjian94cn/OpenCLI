@@ -4,7 +4,7 @@ import { setAntigravityModel } from './utils.js';
 export const modelCommand = cli({
     site: 'antigravity',
     name: 'model',
-    access: 'read',
+    access: 'write',
     description: 'Switch the active LLM model in Antigravity',
     domain: 'localhost',
     strategy: Strategy.UI,
@@ -12,9 +12,9 @@ export const modelCommand = cli({
     args: [
         { name: 'name', help: 'Target model name (e.g. claude, gemini, o1)', required: true, positional: true }
     ],
-    columns: ['Status'],
+    columns: ['ok', 'changed', 'model', 'reason'],
     func: async (page, kwargs) => {
-        const result = await setAntigravityModel(page, kwargs.name.toLowerCase());
+        const result = await setAntigravityModel(page, kwargs.name);
         if (!result?.ok) {
             const available = Array.isArray(result?.availableModels) && result.availableModels.length > 0
                 ? ` Available: ${result.availableModels.join(', ')}`
@@ -22,6 +22,6 @@ export const modelCommand = cli({
             throw new Error(`${result?.reason || 'Unable to switch model.'}${available}`);
         }
         await page.wait(0.5);
-        return [{ Status: `Model switched to: ${kwargs.name}` }];
+        return result;
     },
 });

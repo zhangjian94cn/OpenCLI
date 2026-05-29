@@ -1,5 +1,7 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { conversationSelectionArgs, openCodexConversation } from './sidebar.js';
+import { getCodexPageState } from './utils.js';
+
 export const readCommand = cli({
     site: 'codex',
     name: 'read',
@@ -9,33 +11,24 @@ export const readCommand = cli({
     strategy: Strategy.UI,
     browser: true,
     args: [
+        { name: 'last', type: 'int', default: 5, help: 'Number of recent messages to include' },
         ...conversationSelectionArgs,
     ],
-    columns: ['Project', 'Conversation', 'Content'],
+    columns: ['ok', 'project', 'conversation', 'message_count'],
     func: async (page, kwargs) => {
         const selected = await openCodexConversation(page, kwargs);
-        const historyText = await page.evaluate(`
-      (function() {
-        const turns = Array.from(document.querySelectorAll('[data-content-search-turn-key]'));
-        if (turns.length > 0) {
-            return turns.map(t => t.innerText || t.textContent).join('\\n\\n---\\n\\n');
-        }
-        
-        const threadContainer = document.querySelector('[role="log"], [data-testid="conversation"], .thread-container, .messages-list, main');
-        
-        if (threadContainer) {
-          return threadContainer.innerText || threadContainer.textContent;
-        }
-        
-        return document.body.innerText;
-      })()
-    `);
-        return [
-            {
-                Project: selected?.project || '',
-                Conversation: selected?.conversation || '',
-                Content: historyText,
-            },
-        ];
+        const state = await getCodexPageState(page, { last: kwargs.last });
+        const messages = Array.isArray(state.messages) ? state.messages : [];
+        return {
+            ok: true,
+            project: selected?.project || state.project || '',
+            project_path: selected?.projectPath || state.project_path || '',
+            conversation: selected?.conversation || state.conversation || '',
+            thread_id: selected?.threadId || state.thread_id || '',
+            conversation_id: state.conversation_id || '',
+            message_count: state.message_count || 0,
+            messages,
+            content: messages.map((message) => message.content).filter(Boolean).join('\n\n---\n\n'),
+        };
     },
 });

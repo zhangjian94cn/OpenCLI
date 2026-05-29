@@ -2,8 +2,10 @@ import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwe
 
 export const CLAUDE_DOMAIN = 'claude.ai';
 export const CLAUDE_URL = 'https://claude.ai/new';
-export const COMPOSER_SELECTOR = '[data-testid="chat-input"]';
-export const MESSAGE_SELECTOR = '.font-claude-response';
+export const CHAT_COMPOSER_SELECTOR = '[data-testid="chat-input"]';
+export const CODE_PROMPT_SELECTOR = '[contenteditable="true"][aria-label="Prompt"]';
+export const COMPOSER_SELECTOR = `${CHAT_COMPOSER_SELECTOR}, ${CODE_PROMPT_SELECTOR}`;
+export const MESSAGE_SELECTOR = '.font-claude-response, .epitaxy-markdown';
 export const MODEL_DROPDOWN_SELECTOR = '[data-testid="model-selector-dropdown"]';
 
 const MODEL_DISPLAY_NAMES = {
@@ -97,9 +99,36 @@ export function requireConversationId(value) {
 
 export async function getVisibleMessages(page) {
     const result = await page.evaluate(`(() => {
-        var nodes = document.querySelectorAll('[data-testid="user-message"], ${MESSAGE_SELECTOR}');
+        function isVisibleMessageNode(el) {
+            var rect = el.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+            if (rect.right <= 0 || rect.bottom <= 0) return false;
+            if (rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+            var node = el;
+            while (node && node !== document.body) {
+                var style = window.getComputedStyle(node);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                node = node.parentElement;
+            }
+            return true;
+        }
         var rows = [];
-        Array.from(nodes).forEach(function(el) {
+        var codeEntries = Array.from(document.querySelectorAll('[data-epitaxy-entry]'))
+            .filter(isVisibleMessageNode);
+        if (codeEntries.length) {
+            codeEntries.forEach(function(entry) {
+                var assistantNode = entry.querySelector('.epitaxy-markdown');
+                var userNode = entry.querySelector('[class*="whitespace-pre-wrap"]');
+                var role = assistantNode ? 'assistant' : 'user';
+                var node = assistantNode || userNode || entry;
+                var raw = (node.innerText || '').trim();
+                if (raw) rows.push({ role: role, text: raw });
+            });
+            return rows;
+        }
+        var nodes = Array.from(document.querySelectorAll('[data-testid="user-message"], ${MESSAGE_SELECTOR}'))
+            .filter(isVisibleMessageNode);
+        nodes.forEach(function(el) {
             var isUser = el.getAttribute('data-testid') === 'user-message';
             var raw = (el.innerText || '').trim();
             if (!isUser) {
@@ -285,7 +314,20 @@ export async function sendMessage(page, prompt) {
 
 export async function getBubbleCount(page) {
     const count = await page.evaluate(`(() => {
-        return document.querySelectorAll('${MESSAGE_SELECTOR}').length;
+        function isVisibleMessageNode(el) {
+            var rect = el.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+            if (rect.right <= 0 || rect.bottom <= 0) return false;
+            if (rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+            var node = el;
+            while (node && node !== document.body) {
+                var style = window.getComputedStyle(node);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                node = node.parentElement;
+            }
+            return true;
+        }
+        return Array.from(document.querySelectorAll('${MESSAGE_SELECTOR}')).filter(isVisibleMessageNode).length;
     })()`);
     return count || 0;
 }
@@ -301,11 +343,24 @@ export async function waitForResponse(page, baselineCount, prompt, timeoutMs) {
         let result;
         try {
             result = await page.evaluate(`(() => {
-                var bubbles = document.querySelectorAll('${MESSAGE_SELECTOR}');
+                function isVisibleMessageNode(el) {
+                    var rect = el.getBoundingClientRect();
+                    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+                    if (rect.right <= 0 || rect.bottom <= 0) return false;
+                    if (rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;
+                    var node = el;
+                    while (node && node !== document.body) {
+                        var style = window.getComputedStyle(node);
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                        node = node.parentElement;
+                    }
+                    return true;
+                }
+                var bubbles = Array.from(document.querySelectorAll('${MESSAGE_SELECTOR}')).filter(isVisibleMessageNode);
                 // Adaptive thinking renders "Thought process" labels at the top
                 // of the response (often duplicated for the expand/collapse widget).
                 // Strip them so the row value is the actual answer text.
-                var texts = Array.from(bubbles).map(function(b) {
+                var texts = bubbles.map(function(b) {
                     var raw = (b.innerText || '').trim();
                     // Drop leading paragraphs that are widget labels:
                     //   "Thought process" / "Thought for Xs" — Adaptive thinking expand widget

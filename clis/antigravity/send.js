@@ -1,5 +1,5 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { sendAntigravityMessage } from './utils.js';
+import { getAntigravityPageState, sendAntigravityMessage } from './utils.js';
 
 export const sendCommand = cli({
     site: 'antigravity',
@@ -12,10 +12,20 @@ export const sendCommand = cli({
     args: [
         { name: 'message', help: 'The message text to send', required: true, positional: true }
     ],
-    columns: ['Status', 'Message'],
+    columns: ['ok', 'action', 'send_method', 'message_count'],
     func: async (page, kwargs) => {
         const text = kwargs.message;
-        await sendAntigravityMessage(page, text);
-        return [{ Status: 'Sent successfully', Message: text }];
+        const stateBefore = await getAntigravityPageState(page, { last: 1 }).catch(() => null);
+        const method = await sendAntigravityMessage(page, text);
+        const stateAfter = await getAntigravityPageState(page, { last: 5 }).catch(() => null);
+        return {
+            ok: true,
+            action: 'send',
+            send_method: method,
+            message: text,
+            message_count: stateAfter?.message_count || 0,
+            state_before: stateBefore,
+            state_after: stateAfter,
+        };
     },
 });

@@ -17,11 +17,14 @@ export OPENCLI_CDP_TARGET="antigravity"
 \`\`\`
 
 ## High-Level Capabilities
-1. **Send Messages (`opencli antigravity send <message>`)**: Type and send a message directly into the chat UI.
-2. **Read History (`opencli antigravity read`)**: Scrape the raw chat transcript from the main UI container.
-3. **Extract Code (`opencli antigravity extract-code`)**: Automatically isolate and extract source code text blocks from the AI's recent answers.
-4. **Switch Models (`opencli antigravity model <name>`)**: Instantly toggle the active LLM (e.g., \`gemini\`, \`claude\`).
-5. **Clear Context (`opencli antigravity new`)**: Start a fresh conversation.
+1. **One-shot tasks (`opencli antigravity ask <message>`)**: Optionally start a new conversation, switch model, send, wait, and return the reply in one command.
+2. **State (`opencli antigravity state`)**: Read current URL, title, conversation id, model, generation state, composer state, and recent messages.
+3. **Conversations (`opencli antigravity conversations`)**: List visible sidebar projects and conversations without dumping raw DOM to the model.
+4. **Models (`opencli antigravity models`)**: List visible model options and the current selected model.
+5. **Open Conversation (`opencli antigravity open <id-or-title>`)**: Open a visible sidebar conversation.
+6. **Wait/Stop (`opencli antigravity wait` / `opencli antigravity stop`)**: Wait for generation to finish or stop the current generation.
+7. **Send/Read/Extract (`send`, `read`, `extract-code`)**: Script message IO and code-block extraction.
+8. **Switch/New (`model`, `new`)**: Switch active model or start a fresh conversation.
 
 ## Examples for Automated Workflows
 
@@ -30,6 +33,22 @@ export OPENCLI_CDP_TARGET="antigravity"
 opencli antigravity send "Write a python script to fetch HN top stories"
 # wait ~10-15 seconds for output to render
 opencli antigravity extract-code > hn_fetcher.py
+\`\`\`
+
+### One-shot Remote Control
+\`\`\`bash
+opencli antigravity ask "Hello" \
+  --new-conversation true \
+  --model "Gemini 3.5 Flash Medium" \
+  --wait true \
+  --format json
+\`\`\`
+
+### Inspecting Current UI State
+\`\`\`bash
+opencli antigravity state --format json
+opencli antigravity conversations --format json
+opencli antigravity models --format json
 \`\`\`
 
 ### Reading Real-time Logs

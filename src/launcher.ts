@@ -239,6 +239,12 @@ export async function resolveElectronEndpoint(site: string): Promise<string> {
   const isRunning = detectProcess(processName);
   if (isRunning) {
     log.debug(`[launcher] ${label} is running but CDP not available`);
+    if (app.autoRestart === false) {
+      throw new CommandExecutionError(
+        `${label} is running but CDP is not enabled.`,
+        `${label} is configured with autoRestart=false. Restart it manually with --remote-debugging-port=${port}, or set OPENCLI_CDP_ENDPOINT to a reachable endpoint.`,
+      );
+    }
     const confirmed = await confirmPrompt(
       `${label} is running but CDP is not enabled. Restart with debug port?`,
       true,
@@ -254,7 +260,7 @@ export async function resolveElectronEndpoint(site: string): Promise<string> {
   }
 
   // Step 3: Discover path
-  const appPath = discoverAppPath(label);
+  const appPath = app.appPath ?? discoverAppPath(label);
   if (!appPath) {
     throw new CommandExecutionError(
       `Could not find ${label} on this machine.`,
