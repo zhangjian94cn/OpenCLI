@@ -31,11 +31,15 @@ export interface ElectronAppEntry {
   preferredTargetUrlPatterns?: string[];
   /** URL regexes for inspectable targets that should not be selected for this app. */
   ignoredTargetUrlPatterns?: string[];
+  /** Optional path to DevToolsActivePort file. When set, the launcher
+   *  reads the actual port from this file before falling back to `port`.
+   *  Supports "~" expansion and env-var substitution. */
+  devToolsActivePortPath?: string;
 }
 
 export const builtinApps: Record<string, ElectronAppEntry> = {
   cursor:        { port: 9226, processName: 'Cursor',      bundleId: 'com.todesktop.runtime.Cursor',   displayName: 'Cursor' },
-  codex:         { port: 9238, processName: 'Codex',        bundleId: 'com.openai.codex',               displayName: 'Codex' },
+  codex:         { port: 9238, processName: 'Codex',        bundleId: 'com.openai.codex',               displayName: 'Codex', devToolsActivePortPath: '~/Library/Application Support/Codex/DevToolsActivePort' },
   'claude-app':  {
     port: 9242,
     processName: 'Claude',
@@ -45,6 +49,7 @@ export const builtinApps: Record<string, ElectronAppEntry> = {
     autoRestart: false,
     preferredTargetUrlPatterns: ['^https://claude\\.ai/'],
     ignoredTargetUrlPatterns: ['^file://'],
+    devToolsActivePortPath: '~/Library/Application Support/Claude/DevToolsActivePort',
   },
   chatwise:      { port: 9228, processName: 'ChatWise',     bundleId: 'com.chatwise.app',               displayName: 'ChatWise' },
   'discord-app': { port: 9232, processName: 'Discord',      bundleId: 'com.discord.app',                 displayName: 'Discord' },
@@ -55,6 +60,7 @@ export const builtinApps: Record<string, ElectronAppEntry> = {
     executableNames: ['Electron', 'Antigravity'],
     bundleId: 'dev.antigravity.app',
     displayName: 'Antigravity',
+    devToolsActivePortPath: '~/Library/Application Support/Antigravity/DevToolsActivePort',
   },
   'chatgpt-app': { port: 9236, processName: 'ChatGPT',      bundleId: 'com.openai.chat',                displayName: 'ChatGPT' },
   qoder:         {

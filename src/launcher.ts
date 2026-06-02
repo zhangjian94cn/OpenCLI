@@ -11,7 +11,9 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import type { ElectronAppEntry } from './electron-apps.js';
 import { getElectronApp } from './electron-apps.js';
 import { confirmPrompt } from './tui.js';
@@ -201,6 +203,58 @@ async function pollForReady(port: number): Promise<void> {
 }
 
 /**
+ * Read a DevToolsActivePort file and return the port number.
+ *
+ * The file format is:
+ *   <port>
+ *   <devtools browser ws path>
+ *
+ * Returns the port number from line 1, or null if the file
+ * doesn't exist, is unreadable, or the first line isn't numeric.
+ */
+function readDevToolsActivePort(filePath: string): number | null {
+  try {
+    const expanded = filePath.startsWith('~')
+      ? path.join(os.homedir(), filePath.slice(1))
+      : filePath;
+    const content = fs.readFileSync(expanded, 'utf-8').trim();
+    if (!content) return null;
+    const firstLine = content.split('\n')[0].trim();
+    const port = parseInt(firstLine, 10);
+    if (isNaN(port) || port < 1 || port > 65535) return null;
+    return port;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the actual CDP port for an Electron app.
+ *
+ * Priority:
+ * 1. If the app entry has `devToolsActivePortPath` and the file exists
+ *    with a parseable port → probe it and use if live
+ * 2. Fall back to `app.port` from the registry
+ */
+async function resolvePort(app: ElectronAppEntry, label: string): Promise<number> {
+  const configuredPort = app.port;
+
+  if (app.devToolsActivePortPath) {
+    const activePort = readDevToolsActivePort(app.devToolsActivePortPath);
+    if (activePort !== null && activePort !== configuredPort) {
+      log.debug(`[launcher] DevToolsActivePort says ${activePort} (configured: ${configuredPort})`);
+      if (await probeCDP(activePort)) {
+        log.debug(`[launcher] DevToolsActivePort ${activePort} is live, using it`);
+        return activePort;
+      }
+      log.debug(`[launcher] DevToolsActivePort ${activePort} not live, falling back`);
+    }
+  }
+
+  return configuredPort;
+}
+
+/**
  * Main entry point: resolve an Electron app to a CDP endpoint URL.
  *
  * Returns the endpoint URL: http://127.0.0.1:{port}
@@ -214,8 +268,11 @@ export async function resolveElectronEndpoint(site: string): Promise<string> {
     );
   }
 
-  const { port, processName, displayName } = app;
+  const { processName, displayName } = app;
   const label = displayName ?? processName;
+
+  // Resolve port dynamically: DevToolsActivePort file first, then registry default
+  const port = await resolvePort(app, label);
   const endpoint = `http://127.0.0.1:${port}`;
 
   // Step 1: Already running with CDP?
