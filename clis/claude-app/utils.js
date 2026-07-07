@@ -5,13 +5,13 @@ import {
     ensureClaudeComposer,
     ensureClaudeLogin,
     getPageState,
-    isOnClaude,
 } from '../claude/utils.js';
 
 export const CLAUDE_APP_SITE = 'claude-app';
 export const CLAUDE_APP_LABEL = 'Claude App';
 export const CLAUDE_APP_PROJECTS_URL = 'https://claude.ai/projects';
 export const CLAUDE_APP_CODE_URL = 'https://claude.ai/epitaxy';
+export const CLAUDE_APP_LOCAL_ORIGIN = 'app://localhost';
 export const CLAUDE_APP_DEFAULT_MODE = 'code';
 export const CLAUDE_APP_MODES = ['chat', 'cowork', 'code'];
 export const CLAUDE_APP_MODE_LABELS = {
@@ -24,6 +24,12 @@ export const CLAUDE_APP_CODE_MODEL_LABELS = {
     opus: 'Opus 4.7',
     haiku: 'Haiku 4.5',
 };
+export const CLAUDE_APP_CODE_MODEL_FALLBACK_LABELS = {
+    'Sonnet 4.6': ['deepseek-v4-pro'],
+    'Opus 4.7': ['deepseek-v4-pro'],
+    'Haiku 4.5': ['deepseek-v4-flash'],
+};
+const CLAUDE_APP_CODE_MODEL_TEXT_PATTERN = '\\b(Opus|Sonnet|Haiku)\\b|claude|deepseek|gemini|gpt|qwen|kimi|glm|grok|llama|mistral';
 export const CLAUDE_APP_CODE_EFFORT_LABELS = {
     low: 'Low',
     medium: 'Medium',
@@ -86,12 +92,28 @@ export function normalizeClaudeAppCodeEffort(value) {
     );
 }
 
+export function isClaudeAppUrl(value) {
+    if (typeof value !== 'string' || !value) return false;
+    try {
+        const url = new URL(value);
+        if (url.hostname === CLAUDE_DOMAIN || url.hostname.endsWith(`.${CLAUDE_DOMAIN}`)) return true;
+        return url.protocol === 'app:' && url.hostname === 'localhost';
+    } catch {
+        return false;
+    }
+}
+
+export async function isOnClaudeApp(page) {
+    const url = await page.evaluate('window.location.href').catch(() => '');
+    return isClaudeAppUrl(url);
+}
+
 export async function ensureClaudeAppPage(page, message = 'Claude App requires a visible claude.ai session.') {
-    if (!(await isOnClaude(page))) {
+    if (!(await isOnClaudeApp(page))) {
         const url = await page.evaluate('window.location.href').catch(() => '');
         throw new CommandExecutionError(
             message,
-            `Connected desktop window is not on ${CLAUDE_DOMAIN}. Current URL: ${url || '(unknown)'}`,
+            `Connected desktop window is not Claude App or ${CLAUDE_DOMAIN}. Current URL: ${url || '(unknown)'}`,
         );
     }
     return ensureClaudeLogin(page, message);
@@ -354,6 +376,7 @@ export async function getClaudeAppCodeDraftState(page) {
         function text(el) {
             return ((el && (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title'))) || '').trim();
         }
+        var modelPattern = new RegExp(${JSON.stringify(CLAUDE_APP_CODE_MODEL_TEXT_PATTERN)}, 'i');
         var primary = document.querySelector('[role="region"][aria-label="Primary pane"]') || document.querySelector('main') || document.body;
         var buttons = Array.from(primary.querySelectorAll('button')).map(function(button) {
             return {
@@ -368,7 +391,7 @@ export async function getClaudeAppCodeDraftState(page) {
         var folderButton = localIndex >= 0 ? buttons[localIndex + 1] : null;
         var branchButton = localIndex >= 0 ? buttons[localIndex + 2] : null;
         var modelButton = buttons.slice().reverse().find(function(item) {
-            return /\\b(Opus|Sonnet|Haiku)\\b/.test(item.text);
+            return modelPattern.test(item.text || item.aria || item.title || '');
         }) || null;
         var modelText = modelButton ? modelButton.text.replace(/\\s+/g, ' ').trim() : '';
         var permissionButton = buttons.find(function(item) {
@@ -476,10 +499,12 @@ export async function selectClaudeAppCodeFolder(page, selector) {
 async function openClaudeAppCodeModelMenu(page) {
     await closeClaudeAppMenus(page);
     const opened = await page.evaluate(`(() => {
+        var modelPattern = new RegExp(${JSON.stringify(CLAUDE_APP_CODE_MODEL_TEXT_PATTERN)}, 'i');
         var primary = document.querySelector('[role="region"][aria-label="Primary pane"]') || document.querySelector('main') || document.body;
         var buttons = Array.from(primary.querySelectorAll('button'));
         var target = buttons.slice().reverse().find(function(button) {
-            return /\\b(Opus|Sonnet|Haiku)\\b/.test((button.innerText || '').trim());
+            var text = (button.innerText || button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
+            return modelPattern.test(text);
         });
         if (!target) return { ok: false, reason: 'model button not found' };
         target.click();
@@ -495,15 +520,19 @@ async function openClaudeAppCodeModelMenu(page) {
     }
 }
 
-async function clickClaudeAppCodeMenuItem(page, label, sectionName) {
+async function clickClaudeAppCodeMenuItem(page, label, sectionName, fallbackLabels = []) {
     return page.evaluate(`(() => {
         var label = ${JSON.stringify(label)};
+        var fallbackLabels = ${JSON.stringify(fallbackLabels)};
+        var labels = [label].concat(fallbackLabels || []);
         var sectionName = ${JSON.stringify(sectionName)};
         var menus = Array.from(document.querySelectorAll('[role="menu"]'));
         var menu = menus[menus.length - 1];
         if (!menu) return { ok: false, reason: 'menu not found' };
-        var items = Array.from(menu.querySelectorAll('[role="menuitemradio"], [role="menuitem"], button, div'));
+        var controls = Array.from(menu.querySelectorAll('[role="menuitemradio"], [role="menuitem"], button'));
+        var items = controls.length ? controls : Array.from(menu.querySelectorAll('div'));
         function clean(el) { return ((el && (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title'))) || '').replace(/\\s+/g, ' ').trim(); }
+        function normalize(value) { return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
         function visible(el) {
             var rect = el.getBoundingClientRect();
             return rect && rect.width > 0 && rect.height > 0;
@@ -511,8 +540,13 @@ async function clickClaudeAppCodeMenuItem(page, label, sectionName) {
         var target = items.find(function(item) {
             var itemText = clean(item);
             if (!itemText || !visible(item)) return false;
-            if (itemText === label || itemText.indexOf(label + ' ·') === 0) return true;
-            return sectionName === 'model' && itemText.indexOf(label) >= 0 && /^\\b(Opus|Sonnet|Haiku)\\b/.test(itemText);
+            return labels.some(function(candidate) {
+                var wanted = normalize(candidate);
+                if (!wanted) return false;
+                if (itemText === candidate || itemText.indexOf(candidate + ' ·') === 0) return true;
+                if (sectionName !== 'model') return false;
+                return normalize(itemText).indexOf(wanted) >= 0;
+            });
         });
         if (!target) {
             var available = items.map(clean).filter(Boolean).slice(0, 20);
@@ -530,15 +564,16 @@ export async function selectClaudeAppCodeModel(page, model) {
     const label = normalizeClaudeAppCodeModel(model);
     if (!label) return getClaudeAppCodeDraftState(page);
     const current = await getClaudeAppCodeDraftState(page);
-    if (current.Model && current.Model.indexOf(label) >= 0) {
+    const fallbackLabels = CLAUDE_APP_CODE_MODEL_FALLBACK_LABELS[label] || [];
+    if (current.Model && ([label, ...fallbackLabels].some((item) => current.Model.toLowerCase().includes(item.toLowerCase())))) {
         return { ok: true, changed: false, ...current };
     }
     await openClaudeAppCodeModelMenu(page);
-    const clicked = await clickClaudeAppCodeMenuItem(page, label, 'model');
+    const clicked = await clickClaudeAppCodeMenuItem(page, label, 'model', fallbackLabels);
     if (!clicked?.ok) {
         throw new ArgumentError(
             `Claude App Code model is not available: ${label}`,
-            `Visible menu options: ${(clicked?.available || []).join(', ') || '(none)'}`,
+            `Tried aliases: ${[label, ...fallbackLabels].join(', ')}. Visible menu options: ${(clicked?.available || []).join(', ') || '(none)'}`,
         );
     }
     await page.wait(0.5);

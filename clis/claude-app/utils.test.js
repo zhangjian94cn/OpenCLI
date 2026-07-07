@@ -3,6 +3,8 @@ import { ArgumentError, EmptyResultError } from '@jackwener/opencli/errors';
 import {
     findClaudeAppProject,
     findClaudeAppCodeSession,
+    isClaudeAppUrl,
+    CLAUDE_APP_CODE_MODEL_FALLBACK_LABELS,
     normalizeClaudeAppCodeEffort,
     normalizeClaudeAppCodeModel,
     normalizeClaudeAppMode,
@@ -37,6 +39,15 @@ describe('claude-app project helpers', () => {
 });
 
 describe('claude-app mode helpers', () => {
+    it('recognizes Claude web and desktop app URLs', () => {
+        expect(isClaudeAppUrl('https://claude.ai/new')).toBe(true);
+        expect(isClaudeAppUrl('https://api.claude.ai/debug')).toBe(true);
+        expect(isClaudeAppUrl('app://localhost/task/new')).toBe(true);
+        expect(isClaudeAppUrl('app://localhost/epitaxy')).toBe(true);
+        expect(isClaudeAppUrl('http://localhost:9242/json')).toBe(false);
+        expect(isClaudeAppUrl('https://example.com')).toBe(false);
+    });
+
     it('defaults Claude App operations to code mode', () => {
         expect(normalizeClaudeAppMode(undefined)).toBe('code');
         expect(normalizeClaudeAppMode('')).toBe('code');
@@ -60,6 +71,11 @@ describe('claude-app code new-session helpers', () => {
         expect(normalizeClaudeAppCodeModel('Claude Haiku 4.5')).toBe('Haiku 4.5');
         expect(normalizeClaudeAppCodeModel('opus')).toBe('Opus 4.7');
         expect(normalizeClaudeAppCodeModel('sonnet')).toBe('Sonnet 4.6');
+    });
+
+    it('keeps local Code mode model fallbacks for CC Switch menus', () => {
+        expect(CLAUDE_APP_CODE_MODEL_FALLBACK_LABELS['Haiku 4.5']).toContain('deepseek-v4-flash');
+        expect(CLAUDE_APP_CODE_MODEL_FALLBACK_LABELS['Sonnet 4.6']).toContain('deepseek-v4-pro');
     });
 
     it('normalizes Code mode effort aliases to visible menu labels', () => {

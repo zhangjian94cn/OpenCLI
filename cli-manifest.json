@@ -32684,6 +32684,360 @@
     "navigateBefore": false
   },
   {
+    "site": "wechat-desktop",
+    "name": "bulk-send",
+    "description": "Send one text message to each recipient listed in a UTF-8 text file",
+    "access": "write",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "contacts",
+        "type": "str",
+        "required": true,
+        "help": "UTF-8 file with one contact or group name per non-empty line"
+      },
+      {
+        "name": "message",
+        "type": "str",
+        "required": true,
+        "help": "UTF-8 file whose contents are sent as the text message"
+      },
+      {
+        "name": "interval",
+        "type": "number",
+        "default": 3,
+        "required": false,
+        "help": "Seconds to wait between recipients"
+      },
+      {
+        "name": "submit-key",
+        "type": "str",
+        "default": "enter",
+        "required": false,
+        "help": "Key used to submit after paste",
+        "choices": [
+          "enter",
+          "cmd-enter",
+          "none"
+        ]
+      },
+      {
+        "name": "dry-run",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Select recipients but do not paste or submit messages unless false"
+      },
+      {
+        "name": "allow-unverified",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Allow sending to non-self recipients when chat-title verification is unavailable"
+      },
+      {
+        "name": "restore-clipboard",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Restore previous text clipboard contents after each send when possible"
+      },
+      {
+        "name": "clear-composer",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Replace any existing composer text before pasting each message"
+      },
+      {
+        "name": "search-wait",
+        "type": "number",
+        "default": 1.2,
+        "required": false,
+        "help": "Seconds to wait for WeChat search results before pressing Return"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 300,
+        "required": false,
+        "help": "Max seconds for the overall command"
+      }
+    ],
+    "columns": [
+      "ok",
+      "action",
+      "recipient",
+      "submitted",
+      "submit_key"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/bulk-send.js",
+    "sourceFile": "wechat-desktop/bulk-send.js"
+  },
+  {
+    "site": "wechat-desktop",
+    "name": "capabilities",
+    "description": "List implemented wechat-desktop driver capabilities and safety constraints",
+    "access": "read",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [],
+    "columns": [
+      "platform",
+      "driver",
+      "capability",
+      "status",
+      "notes"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/capabilities.js",
+    "sourceFile": "wechat-desktop/capabilities.js"
+  },
+  {
+    "site": "wechat-desktop",
+    "name": "search",
+    "aliases": [
+      "select"
+    ],
+    "description": "Select a WeChat desktop chat by searching its contact or group name",
+    "access": "write",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "recipient",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Contact or group name to select, e.g. 文件传输助手"
+      },
+      {
+        "name": "search-wait",
+        "type": "number",
+        "default": 1.2,
+        "required": false,
+        "help": "Seconds to wait for WeChat search results before pressing Return"
+      }
+    ],
+    "columns": [
+      "action",
+      "recipient",
+      "selected",
+      "verification"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/search.js",
+    "sourceFile": "wechat-desktop/search.js"
+  },
+  {
+    "site": "wechat-desktop",
+    "name": "send",
+    "aliases": [
+      "send-to"
+    ],
+    "description": "Send a text message through the macOS WeChat desktop client",
+    "access": "write",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "recipient",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Contact or group name, e.g. 文件传输助手"
+      },
+      {
+        "name": "text",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Message text to send"
+      },
+      {
+        "name": "submit-key",
+        "type": "str",
+        "default": "enter",
+        "required": false,
+        "help": "Key used to submit after paste",
+        "choices": [
+          "enter",
+          "cmd-enter",
+          "none"
+        ]
+      },
+      {
+        "name": "dry-run",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Select recipient but do not paste or submit the message"
+      },
+      {
+        "name": "allow-unverified",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Allow sending to non-self recipients when chat-title verification is unavailable"
+      },
+      {
+        "name": "restore-clipboard",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Restore previous text clipboard contents after the command when possible"
+      },
+      {
+        "name": "clear-composer",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Replace any existing composer text before pasting the message"
+      },
+      {
+        "name": "search-wait",
+        "type": "number",
+        "default": 1.2,
+        "required": false,
+        "help": "Seconds to wait for WeChat search results before pressing Return"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "Max seconds for the overall command"
+      }
+    ],
+    "columns": [
+      "ok",
+      "action",
+      "recipient",
+      "submitted",
+      "submit_key",
+      "message_preview"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/send.js",
+    "sourceFile": "wechat-desktop/send.js"
+  },
+  {
+    "site": "wechat-desktop",
+    "name": "send-file",
+    "description": "Send a local file through the macOS WeChat desktop client",
+    "access": "write",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "recipient",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Contact or group name, e.g. 文件传输助手"
+      },
+      {
+        "name": "file",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Path to the local file to send"
+      },
+      {
+        "name": "submit-key",
+        "type": "str",
+        "default": "enter",
+        "required": false,
+        "help": "Key used to submit after paste",
+        "choices": [
+          "enter",
+          "cmd-enter",
+          "none"
+        ]
+      },
+      {
+        "name": "dry-run",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Select recipient but do not paste or submit the file"
+      },
+      {
+        "name": "allow-unverified",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Allow sending to non-self recipients when chat-title verification is unavailable"
+      },
+      {
+        "name": "clear-composer",
+        "type": "boolean",
+        "default": true,
+        "required": false,
+        "help": "Replace any existing composer text before pasting the file"
+      },
+      {
+        "name": "search-wait",
+        "type": "number",
+        "default": 1.2,
+        "required": false,
+        "help": "Seconds to wait for WeChat search results before pressing Return"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 20,
+        "required": false,
+        "help": "Max seconds for the overall command"
+      }
+    ],
+    "columns": [
+      "ok",
+      "action",
+      "recipient",
+      "file",
+      "submitted",
+      "submit_key"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/send-file.js",
+    "sourceFile": "wechat-desktop/send-file.js"
+  },
+  {
+    "site": "wechat-desktop",
+    "name": "status",
+    "description": "Check macOS WeChat desktop automation readiness",
+    "access": "read",
+    "domain": "localhost",
+    "strategy": "public",
+    "browser": false,
+    "args": [],
+    "columns": [
+      "platform",
+      "app",
+      "app_running",
+      "process_running",
+      "frontmost",
+      "driver"
+    ],
+    "defaultFormat": "json",
+    "type": "js",
+    "modulePath": "wechat-desktop/status.js",
+    "sourceFile": "wechat-desktop/status.js"
+  },
+  {
     "site": "weibo",
     "name": "comments",
     "description": "Get comments on a Weibo post",

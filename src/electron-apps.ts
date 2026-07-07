@@ -39,7 +39,14 @@ export interface ElectronAppEntry {
 
 export const builtinApps: Record<string, ElectronAppEntry> = {
   cursor:        { port: 9226, processName: 'Cursor',      bundleId: 'com.todesktop.runtime.Cursor',   displayName: 'Cursor' },
-  codex:         { port: 9238, processName: 'Codex',        bundleId: 'com.openai.codex',               displayName: 'Codex', devToolsActivePortPath: '~/Library/Application Support/Codex/DevToolsActivePort' },
+  codex:         {
+    port: 9238,
+    processName: 'Codex',
+    bundleId: 'com.openai.codex',
+    displayName: 'Codex',
+    autoRestart: false,
+    devToolsActivePortPath: '~/Library/Application Support/Codex/DevToolsActivePort',
+  },
   'claude-app':  {
     port: 9242,
     processName: 'Claude',

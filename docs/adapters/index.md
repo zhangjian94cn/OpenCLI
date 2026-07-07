@@ -176,3 +176,4 @@ Run `opencli list` for the live registry.
 | **[Discord](./desktop/discord.md)**         | Desktop messages & channels   | `status` `send` `read` `channels` `servers` `search` `members`                                              |
 | **[Doubao App](./desktop/doubao-app.md)**   | Doubao AI desktop app via CDP | `status` `new` `send` `read` `ask` `screenshot` `dump`                                                      |
 | **[Trae SOLO](./desktop/trae-solo.md)**      | Trae SOLO desktop state       | `status` `history` `model` `mode` `automation-list` `skill-*` `state-*` `task-fs-*`                         |
+| **[WeChat Desktop](./desktop/wechat-desktop.md)** | Native WeChat desktop automation | `status` `capabilities` `search` `send` `send-file` `bulk-send`                                      |
