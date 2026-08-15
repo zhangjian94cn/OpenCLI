@@ -3,11 +3,22 @@
  */
 
 import type { IPage } from '../../types.js';
-import { render } from '../template.js';
-import { generateInterceptorJs, generateReadInterceptedJs } from '../../interceptor.js';
+import { render, normalizeEvaluateSource } from '../template.js';
 
-export async function stepIntercept(page: IPage, params: any, data: any, args: Record<string, any>): Promise<any> {
-  const cfg = typeof params === 'object' ? params : {};
+interface InterceptParams {
+  trigger?: string;
+  capture?: string;
+  timeout?: number;
+  select?: string;
+}
+
+export async function stepIntercept(
+  page: IPage | null,
+  params: unknown,
+  data: unknown,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const cfg: InterceptParams = typeof params === 'object' && params !== null ? (params as InterceptParams) : {};
   const trigger = cfg.trigger ?? '';
   const capturePattern = cfg.capture ?? '';
   const timeout = cfg.timeout ?? 8;
@@ -16,38 +27,37 @@ export async function stepIntercept(page: IPage, params: any, data: any, args: R
   if (!capturePattern) return data;
 
   // Step 1: Inject fetch/XHR interceptor BEFORE trigger
-  await page.evaluate(generateInterceptorJs(JSON.stringify(capturePattern)));
+  await page!.installInterceptor(capturePattern);
 
   // Step 2: Execute the trigger action
   if (trigger.startsWith('navigate:')) {
     const url = render(trigger.slice('navigate:'.length), { args, data });
-    await page.goto(String(url));
+    await page!.goto(String(url));
   } else if (trigger.startsWith('evaluate:')) {
     const js = trigger.slice('evaluate:'.length);
-    const { normalizeEvaluateSource } = await import('../template.js');
-    await page.evaluate(normalizeEvaluateSource(render(js, { args, data }) as string));
+    await page!.evaluate(normalizeEvaluateSource(render(js, { args, data }) as string));
   } else if (trigger.startsWith('click:')) {
     const ref = render(trigger.slice('click:'.length), { args, data });
-    await page.click(String(ref).replace(/^@/, ''));
+    await page!.click(String(ref).replace(/^@/, ''));
   } else if (trigger === 'scroll') {
-    await page.scroll('down');
+    await page!.scroll('down');
   }
 
-  // Step 3: Wait a bit for network requests to fire
-  await page.wait(Math.min(timeout, 3));
+  // Step 3: Wait for network capture (event-driven, not fixed sleep)
+  await page!.waitForCapture(timeout);
 
   // Step 4: Retrieve captured data
-  const matchingResponses = await page.evaluate(generateReadInterceptedJs());
+  const matchingResponses = await page!.getInterceptedRequests();
 
   // Step 5: Select from response if specified
-  let result = matchingResponses.length === 1 ? matchingResponses[0] :
+  let result: unknown = matchingResponses.length === 1 ? matchingResponses[0] :
                matchingResponses.length > 1 ? matchingResponses : data;
 
   if (selectPath && result) {
-    let current = result;
+    let current: unknown = result;
     for (const part of String(selectPath).split('.')) {
       if (current && typeof current === 'object' && !Array.isArray(current)) {
-        current = current[part];
+        current = (current as Record<string, unknown>)[part];
       } else break;
     }
     result = current ?? result;

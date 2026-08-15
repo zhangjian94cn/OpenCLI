@@ -1,27 +1,62 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render } from './output.js';
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+describe('output TTY detection', () => {
+  const originalIsTTY = process.stdout.isTTY;
+  let logSpy: ReturnType<typeof vi.spyOn>;
 
-describe('render', () => {
-  it('renders YAML output', () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    render([{ title: 'Hello', rank: 1 }], { fmt: 'yaml' });
-
-    expect(log).toHaveBeenCalledOnce();
-    expect(log.mock.calls[0]?.[0]).toContain('- title: Hello');
-    expect(log.mock.calls[0]?.[0]).toContain('rank: 1');
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  it('renders yml alias as YAML output', () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  afterEach(() => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, writable: true });
+    logSpy.mockRestore();
+  });
 
-    render({ title: 'Hello' }, { fmt: 'yml' });
+  it('outputs YAML in non-TTY when format is default table', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, writable: true });
+    // commanderAdapter always passes fmt:'table' as default — this must still trigger downgrade
+    render([{ name: 'alice', score: 10 }], { fmt: 'table', columns: ['name', 'score'] });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(out).toContain('name: alice');
+    expect(out).toContain('score: 10');
+  });
 
-    expect(log).toHaveBeenCalledOnce();
-    expect(log.mock.calls[0]?.[0]).toContain('title: Hello');
+  it('outputs table in TTY when format is default table', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true });
+    render([{ name: 'alice', score: 10 }], { fmt: 'table', columns: ['name', 'score'] });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(out).toContain('alice');
+  });
+
+  it('respects explicit -f json even in non-TTY', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, writable: true });
+    render([{ name: 'alice' }], { fmt: 'json' });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(JSON.parse(out)).toEqual([{ name: 'alice' }]);
+  });
+
+  it('shows elapsed time when elapsed is 0', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true });
+    render([{ name: 'alice' }], { fmt: 'table', columns: ['name'], elapsed: 0 });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(out).toContain('0.0s');
+  });
+
+  it('explicit -f table overrides non-TTY auto-downgrade', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, writable: true });
+    render([{ name: 'alice' }], { fmt: 'table', fmtExplicit: true, columns: ['name'] });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    // Should be table output, not YAML
+    expect(out).not.toContain('name: alice');
+    expect(out).toContain('alice');
+  });
+
+  it('prints single markdown payloads without wrapping them in a table', () => {
+    render([{ markdown: '# Title\n\nBody' }], { fmt: 'md' });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(out).toBe('# Title\n\nBody');
+    expect(out).not.toContain('| markdown |');
   });
 });

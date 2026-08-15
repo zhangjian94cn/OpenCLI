@@ -2,97 +2,109 @@
  * Pipeline executor: runs YAML pipeline steps sequentially.
  */
 
-import chalk from 'chalk';
+
 import type { IPage } from '../types.js';
-import { stepNavigate, stepClick, stepType, stepWait, stepPress, stepSnapshot, stepEvaluate } from './steps/browser.js';
-import { stepFetch } from './steps/fetch.js';
-import { stepSelect, stepMap, stepFilter, stepSort, stepLimit } from './steps/transform.js';
-import { stepIntercept } from './steps/intercept.js';
-import { stepTap } from './steps/tap.js';
+import { getStep, type StepHandler } from './registry.js';
+import { log } from '../logger.js';
+import { ConfigError } from '../errors.js';
+import { BROWSER_ONLY_STEPS } from '../capabilityRouting.js';
+import { isTransientBrowserError } from '../browser/errors.js';
 
 export interface PipelineContext {
-  args?: Record<string, any>;
+  args?: Record<string, unknown>;
   debug?: boolean;
+  /** Max retry attempts per step (default: 2 for browser steps, 0 for others) */
+  stepRetries?: number;
 }
-
-/** Step handler: all steps conform to (page, params, data, args) => Promise<any> */
-type StepHandler = (page: IPage | null, params: any, data: any, args: Record<string, any>) => Promise<any>;
-
-/** Registry of all available step handlers */
-const STEP_HANDLERS: Record<string, StepHandler> = {
-  navigate: stepNavigate,
-  fetch: stepFetch,
-  select: stepSelect,
-  evaluate: stepEvaluate,
-  snapshot: stepSnapshot,
-  click: stepClick,
-  type: stepType,
-  wait: stepWait,
-  press: stepPress,
-  map: stepMap,
-  filter: stepFilter,
-  sort: stepSort,
-  limit: stepLimit,
-  intercept: stepIntercept,
-  tap: stepTap,
-};
 
 export async function executePipeline(
   page: IPage | null,
-  pipeline: any[],
+  pipeline: unknown[],
   ctx: PipelineContext = {},
-): Promise<any> {
+): Promise<unknown> {
   const args = ctx.args ?? {};
   const debug = ctx.debug ?? false;
-  let data: any = null;
+  let data: unknown = null;
   const total = pipeline.length;
 
-  for (let i = 0; i < pipeline.length; i++) {
-    const step = pipeline[i];
-    if (!step || typeof step !== 'object') continue;
-    for (const [op, params] of Object.entries(step)) {
-      if (debug) debugStepStart(i + 1, total, op, params);
+  try {
+    for (let i = 0; i < pipeline.length; i++) {
+      const step = pipeline[i];
+      if (!step || typeof step !== 'object') continue;
+      for (const [op, params] of Object.entries(step)) {
+        if (debug) debugStepStart(i + 1, total, op, params);
 
-      const handler = STEP_HANDLERS[op];
-      if (handler) {
-        data = await handler(page, params, data, args);
-      } else {
-        if (debug) process.stderr.write(`  ${chalk.yellow('⚠')}  Unknown step: ${op}\n`);
-      }
+        const handler = getStep(op);
+        if (handler) {
+          data = await executeStepWithRetry(handler, page, params, data, args, op, ctx.stepRetries);
+        } else {
+          throw new ConfigError(
+            `Unknown pipeline step "${op}" at index ${i}.`,
+            'Check the YAML pipeline step name or register the custom step before execution.',
+          );
+        }
 
-      // Detect error objects returned by steps (e.g. tap store not found)
-      if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-        process.stderr.write(`  ${chalk.yellow('⚠')}  ${chalk.yellow(op)}: ${data.error}\n`);
-        if (data.hint) process.stderr.write(`  ${chalk.dim('💡')} ${chalk.dim(data.hint)}\n`);
+        if (debug) debugStepResult(op, data);
       }
-      if (debug) debugStepResult(op, data);
     }
+  } catch (err) {
+    // Attempt cleanup: release automation tab lease on pipeline failure.
+    if (page?.closeWindow) {
+      try { await page.closeWindow(); } catch { /* ignore */ }
+    }
+    throw err;
   }
   return data;
 }
 
-function debugStepStart(stepNum: number, total: number, op: string, params: any): void {
+async function executeStepWithRetry(
+  handler: StepHandler,
+  page: IPage | null,
+  params: unknown,
+  data: unknown,
+  args: Record<string, unknown>,
+  op: string,
+  configRetries?: number,
+): Promise<unknown> {
+  const maxRetries = configRetries ?? (BROWSER_ONLY_STEPS.has(op) ? 2 : 0);
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await handler(page, params, data, args);
+    } catch (err) {
+      if (attempt >= maxRetries) throw err;
+      // Only retry on transient browser errors
+      if (!isTransientBrowserError(err)) throw err;
+      // Brief delay before retry
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  // Unreachable
+  throw new Error(`Step "${op}" failed after ${maxRetries} retries`);
+}
+
+function debugStepStart(stepNum: number, total: number, op: string, params: unknown): void {
   let preview = '';
   if (typeof params === 'string') {
     preview = params.length <= 80 ? ` → ${params}` : ` → ${params.slice(0, 77)}...`;
   } else if (params && typeof params === 'object' && !Array.isArray(params)) {
     preview = ` (${Object.keys(params).join(', ')})`;
   }
-  process.stderr.write(`  ${chalk.dim(`[${stepNum}/${total}]`)} ${chalk.bold.cyan(op)}${preview}\n`);
+  log.step(stepNum, total, op, preview);
 }
 
-function debugStepResult(op: string, data: any): void {
+function debugStepResult(op: string, data: unknown): void {
   if (data === null || data === undefined) {
-    process.stderr.write(`       ${chalk.dim('→ (no data)')}\n`);
+    log.stepResult('(no data)');
   } else if (Array.isArray(data)) {
-    process.stderr.write(`       ${chalk.dim(`→ ${data.length} items`)}\n`);
+    log.stepResult(`${data.length} items`);
   } else if (typeof data === 'object') {
     const keys = Object.keys(data).slice(0, 5);
-    process.stderr.write(`       ${chalk.dim(`→ dict (${keys.join(', ')}${Object.keys(data).length > 5 ? '...' : ''})`)}\n`);
+    log.stepResult(`dict (${keys.join(', ')}${Object.keys(data).length > 5 ? '...' : ''})`);
   } else if (typeof data === 'string') {
     const p = data.slice(0, 60).replace(/\n/g, '\\n');
-    process.stderr.write(`       ${chalk.dim(`→ "${p}${data.length > 60 ? '...' : ''}"`)}\n`);
+    log.stepResult(`"${p}${data.length > 60 ? '...' : ''}"`);
   } else {
-    process.stderr.write(`       ${chalk.dim(`→ ${typeof data}`)}\n`);
+    log.stepResult(`${typeof data}`);
   }
 }
