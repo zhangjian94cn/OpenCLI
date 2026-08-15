@@ -1,6 +1,6 @@
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { normalizeTwitterScreenName, resolveTwitterQueryId, unwrapBrowserResult } from './shared.js';
+import { describeTwitterApiError, normalizeTwitterScreenName, resolveTwitterQueryId, unwrapBrowserResult } from './shared.js';
 import { TWITTER_BEARER_TOKEN } from './utils.js';
 const USER_BY_SCREEN_NAME_QUERY_ID = 'IGgvgiOx4QZndDHuD3x9TQ';
 
@@ -10,6 +10,14 @@ function isPlainObject(value) {
 
 function stringField(value) {
     return typeof value === 'string' ? value : '';
+}
+
+function countField(...values) {
+    for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value))
+            return value;
+    }
+    return 0;
 }
 
 export function mapTwitterProfileResult(result, screenName) {
@@ -27,18 +35,18 @@ export function mapTwitterProfileResult(result, screenName) {
         throw new CommandExecutionError(`Twitter profile response for @${screenName} is missing profile identity fields`);
     }
     const location = isPlainObject(result.location) ? result.location : {};
-    const expandedUrl = legacy.entities?.url?.urls?.[0]?.expanded_url || '';
+    const expandedUrl = stringField(result.website?.url) || stringField(legacy.entities?.url?.urls?.[0]?.expanded_url);
     return [{
         screen_name: stringField(core.screen_name) || stringField(legacy.screen_name) || screenName,
         name: stringField(core.name) || stringField(legacy.name),
-        bio: stringField(legacy.description),
+        bio: stringField(result.profile_bio?.description) || stringField(legacy.description),
         location: stringField(location.location) || stringField(legacy.location),
         url: stringField(expandedUrl),
-        followers: legacy.followers_count || 0,
-        following: legacy.friends_count || 0,
-        tweets: legacy.statuses_count || 0,
-        likes: legacy.favourites_count || 0,
-        verified: Boolean(result.is_blue_verified || legacy.verified),
+        followers: countField(result.relationship_counts?.followers, legacy.followers_count, legacy.normal_followers_count),
+        following: countField(result.relationship_counts?.following, legacy.friends_count),
+        tweets: countField(result.tweet_counts?.tweets, legacy.statuses_count),
+        likes: countField(result.action_counts?.favorites_count, legacy.favourites_count),
+        verified: Boolean(result.is_blue_verified || result.verification?.verified || legacy.verified),
         created_at: stringField(core.created_at) || stringField(legacy.created_at),
     }];
 }
@@ -88,7 +96,7 @@ cli({
         const queryId = await resolveTwitterQueryId(page, 'UserByScreenName', USER_BY_SCREEN_NAME_QUERY_ID);
         const rawResult = unwrapBrowserResult(await page.evaluate(`
       async () => {
-        const screenName = "${username}";
+        const screenName = ${JSON.stringify(username)};
         const ct0 = ${JSON.stringify(ct0)};
 
         const bearer = ${JSON.stringify(TWITTER_BEARER_TOKEN)};
@@ -132,6 +140,7 @@ cli({
           return {
             ok: false,
             auth: resp.status === 401 || resp.status === 403,
+            httpStatus: resp.status,
             error: 'HTTP ' + resp.status,
             hint: 'User may not exist, auth may be required, or queryId expired'
           };
@@ -152,7 +161,12 @@ cli({
             throw new CommandExecutionError('Twitter profile response payload is malformed');
         }
         if (!rawResult.ok) {
-            const message = rawResult.error + (rawResult.hint ? ` (${rawResult.hint})` : '');
+            // For HTTP errors, use fork's rich code mapping (429/401/403/404/5xx differentiation
+            // from describeTwitterApiError); fall back to the plain message for non-HTTP failures
+            // (fetch threw, JSON parse failed, payload malformed).
+            const message = typeof rawResult.httpStatus === 'number'
+                ? describeTwitterApiError('UserByScreenName', rawResult.httpStatus, rawResult.hint)
+                : rawResult.error + (rawResult.hint ? ` (${rawResult.hint})` : '');
             if (rawResult.auth) {
                 throw new AuthRequiredError('x.com', message);
             }

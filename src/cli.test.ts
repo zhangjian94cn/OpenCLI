@@ -8,6 +8,7 @@ import { BrowserCommandError } from './browser/daemon-client.js';
 import type { IPage } from './types.js';
 import { TargetError } from './browser/target-errors.js';
 import { PKG_VERSION } from './version.js';
+import { classifyAdapter } from './help.js';
 
 const {
   mockBrowserConnect,
@@ -66,11 +67,45 @@ describe('createProgram root help descriptions', () => {
     expect(descriptionFor(program, 'browser')).toContain('type');
     expect(descriptionFor(program, 'browser')).toContain('verify');
     expect(descriptionFor(program, 'browser')).not.toContain('Browser control');
+    expect(descriptionFor(program, 'auth')).toBe('refresh, status');
     expect(descriptionFor(program, 'plugin')).toBe('create, install, list, uninstall, update');
     expect(descriptionFor(program, 'adapter')).toBe('eject, reset, status');
     expect(descriptionFor(program, 'profile')).toBe('list, rename, use');
     expect(descriptionFor(program, 'daemon')).toBe('restart, status, stop');
     expect(descriptionFor(program, 'external')).toBe('install, list, register');
+  });
+
+  it('renders auth namespace structured help', () => {
+    const argv = process.argv;
+    try {
+      const program = createProgram('', '');
+      const auth = program.commands.find(cmd => cmd.name() === 'auth')!;
+      expect(auth).toBeTruthy();
+
+      process.argv = ['node', 'opencli', 'auth', '--help', '-f', 'yaml'];
+      const data = yaml.load(auth.helpInformation()) as any;
+
+      expect(data).toMatchObject({
+        namespace: 'auth',
+        description: 'Inspect website login status',
+        command_count: 2,
+      });
+      expect(data.commands.map((cmd: any) => cmd.name)).toEqual(['refresh', 'status']);
+      const status = auth.commands.find(cmd => cmd.name() === 'status')!;
+      process.argv = ['node', 'opencli', 'auth', 'status', '--help', '-f', 'yaml'];
+      const statusData = yaml.load(status.helpInformation()) as any;
+      expect(statusData.command).toBe('opencli auth status');
+      expect(statusData.command_options.map((option: any) => option.name)).toEqual(expect.arrayContaining([
+        'site',
+        'full',
+        'concurrency',
+        'timeout',
+        'only',
+        'format',
+      ]));
+    } finally {
+      process.argv = argv;
+    }
   });
 
   it('keeps leaf command descriptions unchanged', () => {
@@ -152,6 +187,115 @@ describe('createProgram root help descriptions', () => {
       // App adapters appear before Site adapters (External CLIs are absent here)
       expect(help.indexOf('App adapters')).toBeLessThan(help.indexOf('Site adapters'));
     } finally {
+      registry.clear();
+      for (const [key, value] of snapshot) registry.set(key, value);
+    }
+  });
+
+  it('classifies local IP domains as app adapters', () => {
+    expect(classifyAdapter('localhost')).toBe('app');
+    expect(classifyAdapter('127.0.0.1')).toBe('app');
+    expect(classifyAdapter('::1')).toBe('app');
+    expect(classifyAdapter('www.bilibili.com')).toBe('site');
+  });
+
+  it('splits list table output into App and Site sections without changing per-site rows', async () => {
+    const registry = getRegistry();
+    const snapshot = new Map(registry);
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const restoreStdoutSpy = () => stdoutSpy.mockImplementation(() => {});
+    registry.clear();
+    try {
+      cli({
+        site: 'antigravity',
+        name: 'history',
+        access: 'read',
+        description: 'Read Antigravity history',
+        domain: '127.0.0.1',
+        strategy: Strategy.UI,
+        browser: true,
+      });
+      cli({
+        site: 'chatwise',
+        name: 'ask',
+        access: 'write',
+        description: 'Ask Chatwise desktop app',
+        domain: 'localhost',
+        strategy: Strategy.UI,
+        browser: true,
+      });
+      cli({
+        site: 'bilibili',
+        name: 'hot',
+        access: 'read',
+        description: 'Bilibili hot videos',
+        domain: 'www.bilibili.com',
+        strategy: Strategy.PUBLIC,
+        browser: false,
+      });
+
+      const program = createProgram('', '');
+      await program.parseAsync(['node', 'opencli', 'list']);
+      const output = stdoutSpy.mock.calls.flat().join('\n');
+
+      expect(output).toContain('App adapters');
+      expect(output).toContain('Site adapters');
+      expect(output.indexOf('App adapters')).toBeLessThan(output.indexOf('Site adapters'));
+      expect(output).toMatch(/App adapters[\s\S]*antigravity[\s\S]*history \[ui\] — Read Antigravity history/);
+      expect(output).toMatch(/App adapters[\s\S]*chatwise[\s\S]*ask \[ui\] — Ask Chatwise desktop app/);
+      expect(output).toMatch(/Site adapters[\s\S]*bilibili[\s\S]*hot \[public\] — Bilibili hot videos/);
+      expect(output).toContain('3 built-in commands across 2 apps + 1 sites,');
+    } finally {
+      restoreStdoutSpy();
+      stdoutSpy.mockClear();
+      registry.clear();
+      for (const [key, value] of snapshot) registry.set(key, value);
+    }
+  });
+
+  it('omits empty list table sections and leaves structured list rows unchanged', async () => {
+    const registry = getRegistry();
+    const snapshot = new Map(registry);
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const restoreStdoutSpy = () => stdoutSpy.mockImplementation(() => {});
+    registry.clear();
+    try {
+      cli({
+        site: 'bilibili',
+        name: 'hot',
+        access: 'read',
+        description: 'Bilibili hot videos',
+        domain: 'www.bilibili.com',
+        strategy: Strategy.PUBLIC,
+        browser: false,
+        columns: ['title', 'url'],
+      });
+
+      const tableProgram = createProgram('', '');
+      await tableProgram.parseAsync(['node', 'opencli', 'list']);
+      const tableOutput = stdoutSpy.mock.calls.flat().join('\n');
+      expect(tableOutput).not.toContain('App adapters');
+      expect(tableOutput).toContain('Site adapters');
+      expect(tableOutput).toContain('1 built-in commands across 0 apps + 1 sites,');
+
+      stdoutSpy.mockClear();
+      const jsonProgram = createProgram('', '');
+      await jsonProgram.parseAsync(['node', 'opencli', 'list', '-f', 'json']);
+      const jsonOutput = stdoutSpy.mock.calls.flat().join('\n');
+      const rows = JSON.parse(jsonOutput);
+      expect(rows).toMatchObject([
+        {
+          site: 'bilibili',
+          name: 'hot',
+          domain: 'www.bilibili.com',
+          columns: ['title', 'url'],
+        },
+      ]);
+      expect(rows[0]).not.toHaveProperty('adapterKind');
+      expect(rows[0]).not.toHaveProperty('section');
+    } finally {
+      restoreStdoutSpy();
+      stdoutSpy.mockClear();
       registry.clear();
       for (const [key, value] of snapshot) registry.set(key, value);
     }
@@ -745,7 +889,7 @@ describe('resolveSitemapAvailabilityForUrl', () => {
     const homeDir = path.join(os.tmpdir(), 'opencli-sitemap-home');
     const packageRoot = path.join(os.tmpdir(), 'opencli-sitemap-package');
     const localSitemap = path.join(homeDir, '.opencli', 'sites', 'twitter', 'sitemap.md');
-    const globalSitemap = path.join(packageRoot, 'skills', 'opencli-sitemap-author', 'references', 'site-memory', 'twitter', 'sitemap');
+    const globalSitemap = path.join(packageRoot, 'sitemaps', 'twitter');
     const exists = new Set([localSitemap, globalSitemap]);
 
     const report = resolveSitemapAvailabilityForUrl('https://x.com/opencli', {
@@ -1029,7 +1173,7 @@ describe('browser tab targeting commands', () => {
 
     await program.parseAsync(['node', 'opencli', 'browser', '--session', 'test', 'bind']);
 
-    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, session: 'test', surface: 'browser' });
+    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 45, session: 'test', surface: 'browser' });
     expect(mockBindTab).toHaveBeenCalledWith('test', {});
     const out = lastJsonLog();
     expect(out.session).toBe('test');
@@ -1053,7 +1197,7 @@ describe('browser tab targeting commands', () => {
 
     await program.parseAsync(['node', 'opencli', 'browser', '--session', 'test', 'state']);
 
-    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, session: 'test', surface: 'browser', windowMode: 'foreground' });
+    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 45, session: 'test', surface: 'browser', windowMode: 'foreground' });
     expect(browserState.page?.snapshot).toHaveBeenCalled();
   });
 
@@ -1062,7 +1206,7 @@ describe('browser tab targeting commands', () => {
 
     await program.parseAsync(['node', 'opencli', 'browser', '--session', 'test', '--window', 'background', 'state']);
 
-    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, session: 'test', surface: 'browser', windowMode: 'background' });
+    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 45, session: 'test', surface: 'browser', windowMode: 'background' });
     expect(browserState.page?.snapshot).toHaveBeenCalled();
   });
 
@@ -1162,7 +1306,7 @@ describe('browser tab targeting commands', () => {
 
     await program.parseAsync(['node', 'opencli', 'browser', '--session', 'test', 'unbind']);
 
-    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 30, session: 'test', surface: 'browser' });
+    expect(mockBrowserConnect).toHaveBeenCalledWith({ timeout: 45, session: 'test', surface: 'browser' });
     expect(mockSendCommand).toHaveBeenCalledWith('close-window', { session: 'test', surface: 'browser' });
     const out = lastJsonLog();
     expect(out).toEqual({ unbound: true, session: 'test' });

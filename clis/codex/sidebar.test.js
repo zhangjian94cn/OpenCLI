@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ArgumentError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { askCommand } from './ask.js';
+import { extractDiffCommand } from './extract-diff.js';
 import { historyCommand } from './history.js';
 import { projectsCommand } from './projects.js';
 import {
@@ -14,10 +15,9 @@ import {
     findCodexConversation,
     resolveActionConversation,
 } from './_actions.js';
-import {
-    findUniqueModelOption,
-    modelSelectionVerified,
-} from './model.js';
+import { modelCommand } from './model.js';
+import { selectCodexModelOptionInDocument } from './utils.js';
+import { findUniquePickerOption, sendCommand } from './send.js';
 
 class FakeElement {
     constructor(tagName = 'div', attrs = {}, children = [], text = '') {
@@ -90,6 +90,12 @@ function matchesSelector(node, selector) {
     }
     if (selector === '[role="listitem"][aria-label]') {
         return node.getAttribute('role') === 'listitem' && node.getAttribute('aria-label') !== null;
+    }
+    if (selector === '[role="menu"]') {
+        return node.getAttribute('role') === 'menu';
+    }
+    if (selector === 'button') {
+        return node.tagName === 'BUTTON';
     }
     if (selector === '.tabular-nums') {
         return String(node.className || '').split(/\s+/).includes('tabular-nums');
@@ -285,21 +291,43 @@ describe('codex sidebar helpers', () => {
         expect(findActiveCodexConversation(projects)).toBeNull();
     });
 
-    it('matches model options without allowing ambiguous substrings', () => {
-        const labels = ['GPT-5.5', 'GPT-5.4', 'Medium', 'Extra High'];
+    it('matches model options via the normalized model-menu matcher and fails closed when nothing matches', () => {
+        const doc = el('document', {}, [
+            el('div', { role: 'menu' }, [
+                el('button', { role: 'menuitem' }, [], 'GPT-5.5'),
+                el('button', { role: 'menuitem' }, [], 'GPT-5.4'),
+                el('button', { role: 'menuitem' }, [], 'GPT-5.4 mini'),
+            ], 'GPT-5.5 GPT-5.4 GPT-5.4 mini'),
+        ]);
 
-        expect(findUniqueModelOption(labels, 'medium')).toBe('Medium');
-        expect(findUniqueModelOption(labels, '5.5')).toBe('GPT-5.5');
-        expect(() => findUniqueModelOption(labels, '5')).toThrowError(CommandExecutionError);
+        const exact = selectCodexModelOptionInDocument(doc, 'gpt-5.4');
+        expect(exact.ok).toBe(true);
+        expect(exact.selectedModel).toBe('GPT-5.4');
+
+        const missing = selectCodexModelOptionInDocument(doc, 'o1');
+        expect(missing.ok).toBe(false);
+        expect(missing.reason).toContain('not found');
+        expect(missing.availableModels).toContain('gpt-5.4');
     });
 
-    it('verifies model switch postconditions against the visible selector text', () => {
-        expect(modelSelectionVerified('5.5 Extra High', 'GPT-5.5')).toBe(true);
-        expect(modelSelectionVerified('5.5 Medium', 'Medium')).toBe(true);
-        expect(modelSelectionVerified('5 High', 'GPT-5')).toBe(true);
-        expect(modelSelectionVerified('5.5 Extra High', 'Medium')).toBe(false);
-        expect(modelSelectionVerified('5.5 Extra High', 'High')).toBe(false);
-        expect(modelSelectionVerified('5.5 Medium', 'GPT-5')).toBe(false);
+    it('model without a target lists models without switching', async () => {
+        const responses = [
+            { ok: true, currentModel: 'gpt-5.5', availableModels: ['gpt-5.5', 'gpt-5.4'] },
+            { ok: true },
+            { currentModel: 'gpt-5.5', availableModels: ['gpt-5.5', 'gpt-5.4'], rawOptions: ['GPT-5.5', 'GPT-5.4'] },
+        ];
+        const page = {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async () => {},
+        };
+
+        const rows = await modelCommand.func(page, {});
+
+        expect(rows.ok).toBe(true);
+        expect(rows.status).toBe('Active');
+        expect(rows.currentModel).toBe('gpt-5.5');
+        expect(rows.availableModels).toEqual(['gpt-5.5', 'gpt-5.4']);
     });
 
     it('requires a stable thread id for write action postconditions', async () => {
@@ -376,6 +404,22 @@ describe('codex sidebar commands', () => {
         await expect(historyCommand.func(page, {})).rejects.toBeInstanceOf(EmptyResultError);
     });
 
+    it('extract-diff fails empty result instead of returning a sentinel row', async () => {
+        const page = {
+            evaluate: async () => [],
+        };
+
+        await expect(extractDiffCommand.func(page)).rejects.toBeInstanceOf(EmptyResultError);
+    });
+
+    it('extract-diff unwraps Browser Bridge envelopes before checking empty results', async () => {
+        const page = {
+            evaluate: async () => ({ session: 'codex', data: [] }),
+        };
+
+        await expect(extractDiffCommand.func(page)).rejects.toBeInstanceOf(EmptyResultError);
+    });
+
     it('ask rejects invalid timeout instead of falling back to the default', async () => {
         const page = {
             evaluate: async () => 0,
@@ -384,5 +428,282 @@ describe('codex sidebar commands', () => {
         await expect(askCommand.func(page, { text: 'hello', timeout: 'bogus' })).rejects.toBeInstanceOf(ArgumentError);
         await expect(askCommand.func(page, { text: 'hello', timeout: '0' })).rejects.toBeInstanceOf(ArgumentError);
         await expect(askCommand.func(page, { text: 'hello', timeout: '1.5' })).rejects.toBeInstanceOf(ArgumentError);
+    });
+});
+
+describe('codex send picker', () => {
+    it('matches picker options without allowing ambiguous substrings', () => {
+        const options = [
+            { title: 'Review Agent', text: 'Review AgentFind actionable bugs in code changes' },
+            { title: 'Explore Agent', text: 'Explore AgentAnswer questions about the codebase' },
+            { title: 'Agent Builder', text: 'Agent BuilderBuild a custom agent skill' },
+        ];
+
+        expect(findUniquePickerOption(options, 'review agent')).toMatchObject({ title: 'Review Agent', index: 0 });
+        expect(findUniquePickerOption(options, 'actionable bugs')).toMatchObject({ title: 'Review Agent', index: 0 });
+        expect(findUniquePickerOption(options, 'missing option')).toBeNull();
+        expect(() => findUniquePickerOption(options, 'agent')).toThrowError(CommandExecutionError);
+        expect(() => findUniquePickerOption(options, '')).toThrowError(ArgumentError);
+    });
+
+    // The no-pick path delegates to sendCodexMessage (utils.js): clear the
+    // composer, fill it (native typing with DOM-fill fallback), submit via the
+    // send button (native Enter / Enter fallbacks), and verify acceptance by
+    // polling the Codex page state. The mocks below script that protocol:
+    // each getCodexPageState consumes 4 evaluates (url, title, snapshot, projects).
+    function verifiedSendPage(responses, pressed) {
+        return {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+    }
+
+    it('send submits plain text through the verified send path and reports the method', async () => {
+        const pressed = [];
+        const responses = [
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 2, composer: { available: true, hasText: false, text: '' } },
+            [],
+            { available: true, hasText: false, text: '' },
+            { ok: true, available: true, hasText: false, text: '' },
+            { available: true, hasText: true, text: 'hello' },
+            { ok: true, method: 'button' },
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 3, isGenerating: true, composer: { available: true, hasText: false, text: '' } },
+            [],
+        ];
+        const page = verifiedSendPage(responses, pressed);
+
+        const rows = await sendCommand.func(page, { text: 'hello' });
+
+        expect(rows).toEqual([expect.objectContaining({ Status: 'Success', Method: 'button', InjectedText: 'hello' })]);
+        expect(pressed).toEqual([]);
+    });
+
+    it('send falls back to Enter when the send button is unavailable and still verifies acceptance', async () => {
+        const pressed = [];
+        const responses = [
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 2, composer: { available: true, hasText: false, text: '' } },
+            [],
+            { available: true, hasText: false, text: '' },
+            { ok: true, available: true, hasText: false, text: '' },
+            { available: true, hasText: true, text: 'hello' },
+            { ok: false, reason: 'Could not find Codex send button' },
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 3, isGenerating: true, composer: { available: true, hasText: false, text: '' } },
+            [],
+        ];
+        const page = verifiedSendPage(responses, pressed);
+
+        const rows = await sendCommand.func(page, { text: 'hello' });
+
+        expect(rows).toEqual([expect.objectContaining({ Status: 'Success', Method: 'enter', InjectedText: 'hello' })]);
+        expect(pressed).toEqual(['Enter']);
+    });
+
+    it('send throws instead of submitting when the composer ends up holding something else', async () => {
+        const pressed = [];
+        const responses = [
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 2, composer: { available: true, hasText: false, text: '' } },
+            [],
+            { available: true, hasText: false, text: '' },
+            { ok: true, available: true, hasText: false, text: '' },
+            { available: true, hasText: true, text: 'rewritten by the app' },
+        ];
+        const page = verifiedSendPage(responses, pressed);
+
+        await expect(sendCommand.func(page, { text: 'hello' })).rejects.toThrow(/Failed to insert text into Codex composer/);
+        expect(pressed).toEqual([]);
+    });
+
+    it('send fails typed when acceptance is never verified after the fallback Enter', async () => {
+        const pressed = [];
+        const responses = [
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 2, composer: { available: true, hasText: false, text: '' } },
+            [],
+            { available: true, hasText: false, text: '' },
+            { ok: true, available: true, hasText: false, text: '' },
+            { available: true, hasText: true, text: 'hello' },
+            { ok: false, reason: 'Could not find Codex send button' },
+        ];
+        const page = verifiedSendPage(responses, pressed);
+
+        await expect(sendCommand.func(page, { text: 'hello' })).rejects.toThrow(/send was not verified after enter/);
+        expect(pressed).toEqual(['Enter']);
+    });
+
+    it('send anchors composer clearing, filling, and verification to the same composer element', async () => {
+        const anchor = '[data-codex-composer="true"], .ProseMirror[contenteditable="true"], [contenteditable="true"], textarea';
+        const responses = [
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 2, composer: { available: true, hasText: false, text: '' } },
+            [],
+            { available: true, hasText: false, text: '' },
+            { ok: true, available: true, hasText: false, text: '' },
+            { available: true, hasText: true, text: 'hello' },
+            { ok: true, method: 'button' },
+            'https://chatgpt.com/c/1',
+            'Codex',
+            { currentModel: 'gpt-5.5', messageCount: 3, isGenerating: true, composer: { available: true, hasText: false, text: '' } },
+            [],
+        ];
+        const scripts = [];
+        const page = {
+            evaluate: async (script) => {
+                scripts.push(String(script));
+                return responses.shift();
+            },
+            wait: async () => {},
+            pressKey: async () => {},
+        };
+
+        await sendCommand.func(page, { text: 'hello' });
+
+        const composerScripts = scripts.filter((script) => script.includes(anchor));
+        expect(composerScripts.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('send fails typed when the composer selector cannot be verified', async () => {
+        let injectionDone = false;
+        const page = {
+            evaluate: async () => {
+                if (!injectionDone) {
+                    injectionDone = true;
+                    return true;
+                }
+                return null;
+            },
+            wait: async () => {},
+            pressKey: async () => {},
+        };
+
+        await expect(sendCommand.func(page, { text: 'hello' })).rejects.toMatchObject({ code: 'SELECTOR' });
+    });
+
+    it('send unwraps Browser Bridge envelopes before trusting injection success', async () => {
+        const pressed = [];
+        const page = {
+            evaluate: async () => ({ session: 'codex', data: false }),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+
+        await expect(sendCommand.func(page, { text: 'hello' })).rejects.toMatchObject({ code: 'SELECTOR' });
+        expect(pressed).toEqual([]);
+    });
+
+    it('send clicks the matched picker item and verifies the chip before submitting', async () => {
+        const responses = [
+            true, // inject text
+            [{ title: 'Review Agent', text: 'Review AgentFind actionable bugs in code changes' }], // picker options
+            true, // click dispatched
+            { text: '$review-agent', nonChipText: '', chips: [{ name: 'review-agent', display: 'Review Agent' }] }, // chip landed
+            false, // picker closed
+            { text: '', nonChipText: '', chips: [] }, // composer cleared after Enter
+        ];
+        const pressed = [];
+        const page = {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+
+        const rows = await sendCommand.func(page, { text: '/review', pick: 'Review Agent' });
+
+        expect(rows).toEqual([expect.objectContaining({ Status: 'Success', InjectedText: '/review' })]);
+        expect(pressed).toEqual(['Enter']);
+        expect(responses).toHaveLength(0);
+    });
+
+    it('send retries Enter when the picked chip does not echo the slash token', async () => {
+        const chipState = { text: '$agent-builder', nonChipText: '', chips: [{ name: 'agent-builder', display: 'Agent Builder' }] };
+        const responses = [
+            true, // inject text
+            [{ title: 'Agent Builder', text: 'Agent BuilderBuild a custom agent skill' }], // picker options
+            true, // click dispatched
+            chipState, // chip landed
+            false, // picker closed
+            ...Array.from({ length: 6 }, () => chipState), // first Enter left the chip in place
+            { text: '', nonChipText: '', chips: [] }, // composer cleared after the retry Enter
+        ];
+        const pressed = [];
+        const page = {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+
+        const rows = await sendCommand.func(page, { text: '/skills', pick: 'Agent Builder' });
+
+        expect(rows).toEqual([expect.objectContaining({ Status: 'Success', InjectedText: '/skills' })]);
+        expect(pressed).toEqual(['Enter', 'Enter']);
+        expect(responses).toHaveLength(0);
+    });
+
+    it('send fails typed when the picker click did not insert the picked chip', async () => {
+        const stuck = { text: '/review', nonChipText: '/review', chips: [] };
+        const responses = [
+            true, // inject text
+            [{ title: 'Review Agent', text: 'Review AgentFind actionable bugs in code changes' }], // picker options
+            true, // click dispatched
+            ...Array.from({ length: 20 }, () => [stuck, false]).flat(), // chip never lands, picker closed
+        ];
+        const pressed = [];
+        const page = {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+
+        await expect(sendCommand.func(page, { text: '/review', pick: 'Review Agent' })).rejects.toMatchObject({
+            code: 'COMMAND_EXEC',
+            message: 'Codex picker selection did not reach the composer.',
+        });
+        expect(pressed).toEqual([]);
+        expect(responses).toHaveLength(0);
+    });
+
+    it('send surfaces picker candidates when --pick is ambiguous', async () => {
+        const responses = [
+            true, // inject text
+            [
+                { title: 'Review Agent', text: 'Review AgentFind actionable bugs in code changes' },
+                { title: 'Explore Agent', text: 'Explore AgentAnswer questions about the codebase' },
+            ], // picker options
+        ];
+        const pressed = [];
+        const page = {
+            evaluate: async () => responses.shift(),
+            wait: async () => {},
+            pressKey: async (key) => { pressed.push(key); },
+        };
+
+        await expect(sendCommand.func(page, { text: '/review', pick: 'agent' })).rejects.toMatchObject({
+            code: 'COMMAND_EXEC',
+            message: 'Picker option "agent" is ambiguous.',
+        });
+        expect(pressed).toEqual([]);
+        expect(responses).toHaveLength(0);
+    });
+
+    it('send rejects a --pick label that trims to empty', async () => {
+        const page = {
+            evaluate: async () => true,
+            wait: async () => {},
+            pressKey: async () => {},
+        };
+
+        await expect(sendCommand.func(page, { text: '/review', pick: '   ' })).rejects.toBeInstanceOf(ArgumentError);
     });
 });

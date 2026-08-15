@@ -7,6 +7,7 @@ import './delete.js';
 import './history.js';
 import './mark-read.js';
 import './model.js';
+import './models.js';
 import './rename.js';
 import './storage.js';
 
@@ -96,57 +97,77 @@ describe('antigravity write postconditions', () => {
             .rejects.toBeInstanceOf(CommandExecutionError);
     });
 
-    it('model rejects ambiguous partial matches before clicking', async () => {
+    it('model reports a missing match with the available model list', async () => {
         const page = makePage([
-            'Gemini 3.5 Flash',
-            { ok: false, reason: 'Ambiguous model match.', detail: 'wanted=gemini matches=["Gemini Pro","Gemini Flash"]' },
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Gemini 3.5 Flash', messageCount: 2, messages: [] },
+            {},
+            { ok: true, changed: true, currentModel: 'Gemini 3.5 Flash' },
+            { ok: false, reason: 'Model matching "qwen" was not found in the dropdown list.', availableModels: ['Gemini 3.5 Flash', 'Qwen 2.5'] },
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Gemini 3.5 Flash', messageCount: 2, messages: [] },
+            {},
         ]);
 
-        await expect(modelCommand.func(page, { name: 'gemini' }))
-            .rejects.toBeInstanceOf(ArgumentError);
+        await expect(modelCommand.func(page, { name: 'qwen' }))
+            .rejects.toThrow(/not found in the dropdown list.*Available: Gemini 3.5 Flash, Qwen 2\.5/);
     });
 
-    it('model list mode never switches even when a name filter is supplied', async () => {
+    it('model list mode never switches: the read-only models command reports options without clicking them', async () => {
+        const modelsCommand = getRegistry().get('antigravity/models');
+        expect(modelsCommand).toBeDefined();
+        expect(modelsCommand.access).toBe('read');
         const page = makePage([
-            'Gemini 3.5 Flash',
-            { ok: true, labels: ['Gemini 3.5 Flash', 'Claude Sonnet'] },
+            { ok: true, currentModel: 'Gemini 3.5 Flash', availableModels: ['Gemini 3.5 Flash'] },
+            { ok: true, currentModel: 'Gemini 3.5 Flash', availableModels: ['Gemini 3.5 Flash', 'Claude Sonnet'] },
         ]);
 
-        await expect(modelCommand.func(page, { list: true, name: 'claude' })).resolves.toEqual([
-            { Status: 'Active', Model: 'Gemini 3.5 Flash' },
-            { Status: 'Available', Model: 'Claude Sonnet' },
-        ]);
+        await expect(modelsCommand.func(page, {})).resolves.toEqual({
+            ok: true,
+            currentModel: 'Gemini 3.5 Flash',
+            availableModels: ['Gemini 3.5 Flash', 'Claude Sonnet'],
+        });
         expect(page.evaluate).toHaveBeenCalledTimes(2);
     });
 
-    it('model accepts an exact match before falling back to ambiguous partial matching', async () => {
+    it('model switches when the dropdown select succeeds and read-back verifies the target', async () => {
         const page = makePage([
-            'Gemini 3.5 Flash',
-            { ok: true, switched: true, chosen: 'Gemini Pro', labels: ['Gemini Pro', 'Gemini Pro Extended'] },
-            'Gemini Pro',
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Gemini 3.5 Flash', messageCount: 2, messages: [] },
+            {},
+            { ok: true, changed: true, currentModel: 'Gemini 3.5 Flash' },
+            { ok: true, changed: true, selectedModel: 'Qwen 2.5', availableModels: ['Gemini 3.5 Flash', 'Qwen 2.5'] },
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Qwen 2.5', messageCount: 2, messages: [] },
+            {},
         ]);
 
-        await expect(modelCommand.func(page, { name: 'gemini pro' })).resolves.toEqual([
-            { Status: 'switched', Model: 'Gemini Pro' },
-        ]);
+        const result = await modelCommand.func(page, { name: 'qwen' });
+        expect(result.ok).toBe(true);
+        expect(result.changed).toBe(true);
+        expect(result.model).toBe('Qwen 2.5');
     });
 
     it('model fails closed when read-back does not prove the target is active', async () => {
         const page = makePage([
-            'Gemini 3.5 Flash',
-            { ok: true, switched: true, chosen: 'Claude Sonnet', labels: ['Claude Sonnet'] },
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
-            'Gemini 3.5 Flash',
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Gemini 3.5 Flash', messageCount: 2, messages: [] },
+            {},
+            { ok: true, changed: true, currentModel: 'Gemini 3.5 Flash' },
+            { ok: true, changed: true, selectedModel: 'Qwen 2.5', availableModels: ['Gemini 3.5 Flash', 'Qwen 2.5'] },
+            'https://127.0.0.1:9234/c/abc',
+            'Antigravity',
+            { currentModel: 'Gemini 3.5 Flash', messageCount: 2, messages: [] },
+            {},
         ]);
 
-        await expect(modelCommand.func(page, { name: 'claude' }))
-            .rejects.toBeInstanceOf(CommandExecutionError);
+        await expect(modelCommand.func(page, { name: 'qwen' }))
+            .rejects.toThrow(/not verified/i);
     });
 
     it('storage-keys unwraps Browser Bridge envelopes before shaping rows', async () => {

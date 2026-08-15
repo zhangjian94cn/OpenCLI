@@ -997,15 +997,18 @@ export async function setAntigravityModel(page, targetName) {
   }
 
   return {
+    // Keep diagnostic fields from lastResult (selectedModel, availableModels)
+    // but never let them override the fail-closed verdict: an unverified
+    // switch must report ok=false so callers treat it as a failure.
+    ...(lastResult || {
+      reason: `Model matching "${targetName}" was not found in the dropdown list.`,
+      availableModels: [],
+    }),
     ok: false,
     changed: false,
     currentModel: before?.model || opened.currentModel || '',
     state_before: before,
     state_after: after,
-    ...(lastResult || {
-      reason: `Model matching "${targetName}" was not found in the dropdown list.`,
-      availableModels: [],
-    }),
     reason: lastResult?.reason
       || (lastResult?.ok ? `Model switch was not verified. Current model: ${after?.model || before?.model || 'unknown'}` : undefined)
       || `Model matching "${targetName}" was not found in the dropdown list.`,

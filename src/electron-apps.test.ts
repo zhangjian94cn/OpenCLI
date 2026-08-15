@@ -13,6 +13,7 @@ describe('electron-apps registry', () => {
     const app = getElectronApp('codex');
     expect(app).toBeDefined();
     expect(app!.port).toBe(9238);
+    expect(app!.executableNames).toEqual(['ChatGPT', 'Codex']);
     expect(app!.autoRestart).toBe(false);
   });
 

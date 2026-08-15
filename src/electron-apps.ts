@@ -42,6 +42,7 @@ export const builtinApps: Record<string, ElectronAppEntry> = {
   codex:         {
     port: 9238,
     processName: 'Codex',
+    executableNames: ['ChatGPT', 'Codex'],
     bundleId: 'com.openai.codex',
     displayName: 'Codex',
     autoRestart: false,
